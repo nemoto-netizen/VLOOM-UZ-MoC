@@ -2,6 +2,25 @@
 
 Vercel 用のモック画面です。指定の vloom 系 CSS をベースに、2 カラム＋ヘッダー構成の UI を実装しています。
 
+## GitHub への push
+
+1. [GitHub](https://github.com/new) で新しいリポジトリを作成（README や .gitignore は追加しない）
+2. 以下を実行（`USERNAME` / `REPO` は自分のユーザー名とリポジトリ名に置き換え）:
+
+```bash
+cd "c:\Users\nemoto\Desktop\cursorテスト"
+git remote add origin https://github.com/USERNAME/REPO.git
+git branch -M main
+git push -u origin main
+```
+
+Git のユーザー名・メールが未設定の場合は、先に設定してください:
+
+```bash
+git config --global user.name "あなたの名前"
+git config --global user.email "your_email@example.com"
+```
+
 ## セットアップ
 
 ```bash
