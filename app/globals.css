@@ -1,0 +1,4 @@
+/* MoC: body の pointer-events を有効化（common.css の上書き） */
+.moc-page {
+  pointer-events: auto !important;
+}
