@@ -1,18 +1,28 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
+  Calendar,
   ChevronLeft,
   ChevronRight,
   Copy,
   FileSpreadsheet,
+  FileText,
   Folder,
   Paperclip,
   Save,
+  Search,
   Send,
+  Star,
   Settings2,
   Trash2,
+  User,
 } from "lucide-react";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
 
 type OutputFormat = "text" | "table" | "markdown";
 
@@ -28,6 +38,7 @@ type ArtifactRow = {
   reason: string;
   count: number;
   ratio: string;
+  status: "risk-high" | "risk-mid" | "positive";
   sample: string;
 };
 
@@ -38,6 +49,37 @@ const INITIAL_CHIPS = [
   "解約分析",
   "OP通話品質分析",
 ];
+
+const SUGGEST_CARD_CONTENT: Record<string, { title: string; description: string }> = {
+  ありがとう分析: {
+    title: "ありがとう分析",
+    description: "感謝・満足の発言を抽出し、応対品質の強みを整理します。",
+  },
+  ネガポジ分析: {
+    title: "ネガポジ分析",
+    description: "ネガティブ/ポジティブ発言を分類し、傾向を可視化します。",
+  },
+  成約分析: {
+    title: "成約分析",
+    description: "成約に寄与した発言や案内パターンを要因分解します。",
+  },
+  解約分析: {
+    title: "クレーム要因の抽出",
+    description: "不満やネガティブな発言を抽出し、表形式でまとめます。",
+  },
+  OP通話品質分析: {
+    title: "OP通話品質分析",
+    description: "案内品質・説明力・共感姿勢を観点別に評価します。",
+  },
+  "1位の理由を通話ログで深掘り": {
+    title: "1位理由を深掘り",
+    description: "上位要因に紐づく具体的な通話例を抽出します。",
+  },
+  "年代別にクロス集計": {
+    title: "年代別クロス集計",
+    description: "年代セグメント別に解約理由を比較表示します。",
+  },
+};
 
 const FAVORITE_PROMPTS = [
   "クレーム要因抽出（表形式）",
@@ -52,6 +94,7 @@ const ARTIFACT_ROWS: ArtifactRow[] = [
     reason: "初回対応で問題が解決しない",
     count: 43,
     ratio: "43.0%",
+    status: "risk-high",
     sample: "たらい回しにされ、結局解決しなかった",
   },
   {
@@ -59,6 +102,7 @@ const ARTIFACT_ROWS: ArtifactRow[] = [
     reason: "オペレーターの説明不足",
     count: 28,
     ratio: "28.0%",
+    status: "risk-mid",
     sample: "手続きの説明が曖昧で不安になった",
   },
   {
@@ -66,6 +110,7 @@ const ARTIFACT_ROWS: ArtifactRow[] = [
     reason: "価格・費用対効果への不満",
     count: 19,
     ratio: "19.0%",
+    status: "positive",
     sample: "使っていない機能に対して料金が高い",
   },
 ];
@@ -88,6 +133,12 @@ export default function VocArtifactsSplitViewPage() {
 
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("table");
   const [inputValue, setInputValue] = useState("");
+  const [isPromptSheetOpen, setIsPromptSheetOpen] = useState(false);
+  const [promptDraftName, setPromptDraftName] = useState("解約分析_定型プロンプト");
+  const [promptDraftContent, setPromptDraftContent] = useState(
+    "以下の通話ログを対象に、解約理由を分類し、上位3カテゴリの傾向と具体例を抽出してください。\n加えて、改善アクションを優先度順で提案してください。"
+  );
+  const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -104,6 +155,7 @@ export default function VocArtifactsSplitViewPage() {
   const [artifactSummary, setArtifactSummary] = useState("");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canConsult = inputValue.trim().length > 0 && !isAnalyzing;
   const canAnalyze = inputValue.trim().length > 0 && !isAnalyzing;
@@ -169,6 +221,16 @@ export default function VocArtifactsSplitViewPage() {
   const handleRunButton = () => {
     if (!canAnalyze) return;
     runAnalysis(inputValue.trim());
+  };
+
+  const handleAttachClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    setAttachedFiles(files.map((f) => f.name));
   };
 
   const handleCopyArtifact = async () => {
@@ -250,8 +312,11 @@ export default function VocArtifactsSplitViewPage() {
         </div>
       </aside>
 
-      <section className="flex w-[420px] flex-col border-r border-gray-200 bg-white">
-        <div className="sticky top-0 z-10 border-b border-gray-200 bg-white px-4 py-3">
+      <ResizablePanelGroup direction="horizontal" className="flex-1">
+      <ResizablePanel defaultSize={40} minSize={30}>
+      <section className="flex h-full min-w-[450px] flex-col border-r border-gray-200 bg-white font-sans text-sm antialiased">
+        <div className="flex h-full flex-col">
+        <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               {isEditingTitle ? (
@@ -271,15 +336,25 @@ export default function VocArtifactsSplitViewPage() {
                   {reportName}
                 </button>
               )}
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] text-gray-600">
-                  検索条件：2026年1月_クレーム対応
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+                <span className="inline-flex items-center gap-1">
+                  <Search className="h-3.5 w-3.5" />
+                  2026年1月_クレーム対応
                 </span>
-                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] text-gray-600">
-                  作成日：2026/01/14
+                <span className="text-gray-300">|</span>
+                <span className="inline-flex items-center gap-1">
+                  <Calendar className="h-3.5 w-3.5" />
+                  2026/01/14
                 </span>
-                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] text-gray-600">
-                  作成者：池田
+                <span className="text-gray-300">|</span>
+                <span className="inline-flex items-center gap-1">
+                  <User className="h-3.5 w-3.5" />
+                  池田
+                </span>
+                <span className="text-gray-300">|</span>
+                <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px]">
+                  <FileText className="h-3 w-3" />
+                  参照中: 100件の通話データ
                 </span>
               </div>
             </div>
@@ -321,7 +396,7 @@ export default function VocArtifactsSplitViewPage() {
               >
                 <div
                   className={cx(
-                    "max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm",
+                    "max-w-[85%] rounded-2xl px-3 py-2 text-sm",
                     m.role === "user"
                       ? "rounded-br-sm bg-teal-600 text-white"
                       : "rounded-bl-sm border border-gray-200 bg-white text-gray-800"
@@ -329,17 +404,28 @@ export default function VocArtifactsSplitViewPage() {
                 >
                   {m.text}
                   {m.suggestChips && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {m.suggestChips.map((chip) => (
-                        <button
-                          key={chip}
-                          type="button"
-                          onClick={() => handleSuggestClick(chip)}
-                          className="rounded-full border border-teal-200 px-4 py-2 text-sm text-teal-700 hover:bg-teal-50"
-                        >
-                          {chip}
-                        </button>
-                      ))}
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      {m.suggestChips.map((chip) => {
+                        const card = SUGGEST_CARD_CONTENT[chip] ?? {
+                          title: chip,
+                          description: "この観点で分析を実行します。",
+                        };
+                        return (
+                          <button
+                            key={chip}
+                            type="button"
+                            onClick={() => handleSuggestClick(chip)}
+                            className="rounded-xl border border-teal-100 bg-teal-50/40 px-3 py-2.5 text-left transition hover:border-teal-300 hover:bg-teal-50"
+                          >
+                            <div className="text-sm font-semibold text-teal-800">
+                              {card.title}
+                            </div>
+                            <div className="mt-1 text-xs text-teal-700/80">
+                              {card.description}
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -348,16 +434,29 @@ export default function VocArtifactsSplitViewPage() {
           </div>
         </div>
 
-        <div className="border-t border-gray-200 bg-white px-4 py-3">
+        <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3">
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
             <div className="mb-2">
               <button
                 type="button"
+                onClick={handleAttachClick}
                 className="rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-teal-700"
                 title="参考ファイルを追加"
               >
                 <Paperclip className="h-4 w-4" />
               </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                multiple
+                onChange={handleFileChange}
+              />
+              {attachedFiles.length > 0 && (
+                <p className="mt-1 text-xs text-gray-500">
+                  添付: {attachedFiles.join(", ")}
+                </p>
+              )}
             </div>
             <textarea
               ref={textareaRef}
@@ -368,54 +467,74 @@ export default function VocArtifactsSplitViewPage() {
                 resizeTextarea();
               }}
               placeholder="分析の指示や、さらに深掘りしたい質問を入力してください..."
-              className="max-h-44 w-full resize-none bg-transparent text-sm text-gray-800 outline-none placeholder:text-gray-400"
+              className="max-h-32 w-full resize-none overflow-y-auto bg-transparent text-sm text-gray-800 outline-none placeholder:text-gray-400"
               disabled={isAnalyzing}
             />
             <div className="mt-2 flex items-center justify-between">
-              <select
-                value={outputFormat}
-                onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}
-                className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
-                disabled={isAnalyzing}
-              >
-                <option value="text">テキスト</option>
-                <option value="table">表（Table）</option>
-                <option value="markdown">Markdown</option>
-              </select>
+              <div className="flex flex-col gap-1 text-xs text-gray-600">
+                <span className="whitespace-nowrap font-medium">出力形式:</span>
+                <select
+                  value={outputFormat}
+                  onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}
+                  className="h-10 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+                  disabled={isAnalyzing}
+                >
+                  <option value="text">📝 テキスト（要約中心）</option>
+                  <option value="table">📊 表（比較しやすい形式）</option>
+                  <option value="markdown">📄 Markdown（共有向け）</option>
+                </select>
+              </div>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={handleConsult}
                   disabled={!canConsult}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-10 whitespace-nowrap rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  相談する
+                  💬 AIと対話
                 </button>
                 <button
                   type="button"
                   onClick={handleRunButton}
                   disabled={!canAnalyze}
-                  className="inline-flex items-center gap-1 rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-10 items-center gap-1 whitespace-nowrap rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Send className="h-3.5 w-3.5" />
-                  分析を実行
+                  🚀 分析を実行
                 </button>
               </div>
             </div>
           </div>
         </div>
+        </div>
       </section>
+      </ResizablePanel>
+      <ResizableHandle withHandle />
+      <ResizablePanel defaultSize={60} minSize={40}>
 
-      <section className="flex flex-1 flex-col bg-white">
-        <div className="sticky top-0 z-10 border-b border-gray-200 bg-white px-6 py-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-800">{previewTitle}</h2>
+      <section className="relative flex min-w-[500px] flex-col overflow-hidden bg-white">
+        <div
+          className={cx(
+            "sticky top-0 z-10 border-b border-gray-200 bg-white px-6 py-4 transition-[margin] duration-300",
+            isPromptSheetOpen ? "mr-[420px]" : "mr-0"
+          )}
+        >
+          <div className="overflow-x-auto">
+            <div className="flex min-w-max items-center justify-between gap-3">
+            <h2 className="shrink-0 whitespace-nowrap text-sm font-semibold text-gray-800">{previewTitle}</h2>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsPromptSheetOpen(true)}
+                className="inline-flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-teal-200 bg-white px-3 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-50"
+              >
+                <Star className="h-3.5 w-3.5" /> プロンプトを登録
+              </button>
               <button
                 type="button"
                 onClick={handleCopyArtifact}
                 disabled={!artifactRows}
-                className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                className="inline-flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-transparent px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50"
               >
                 <Copy className="h-3.5 w-3.5" />
                 内容をコピー
@@ -424,7 +543,7 @@ export default function VocArtifactsSplitViewPage() {
                 type="button"
                 onClick={handleExportExcel}
                 disabled={!artifactRows}
-                className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                className="inline-flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-transparent px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50"
               >
                 <FileSpreadsheet className="h-3.5 w-3.5" />
                 Excel出力
@@ -432,23 +551,29 @@ export default function VocArtifactsSplitViewPage() {
               <button
                 type="button"
                 onClick={handleReset}
-                className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs text-red-600 hover:bg-red-50"
+                className="inline-flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-transparent px-3 py-1.5 text-xs text-red-600 hover:bg-red-50"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 リセット
               </button>
               <button
                 type="button"
-                className="inline-flex items-center gap-1 rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700"
+                className="inline-flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700"
               >
                 <Save className="h-3.5 w-3.5" />
                 保存
               </button>
             </div>
           </div>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-10">
+        <div
+          className={cx(
+            "flex-1 overflow-y-auto p-10 transition-[margin] duration-300",
+            isPromptSheetOpen ? "mr-[420px]" : "mr-0"
+          )}
+        >
           {!isAnalyzing && !artifactRows && (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="mb-3 rounded-full bg-slate-100 p-4">
@@ -481,16 +606,20 @@ export default function VocArtifactsSplitViewPage() {
                       <th className="px-4 py-3 text-left">解約理由</th>
                       <th className="px-4 py-3 text-right">件数</th>
                       <th className="px-4 py-3 text-right">比率</th>
+                      <th className="px-4 py-3 text-left">ステータス</th>
                       <th className="px-4 py-3 text-left">具体例</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 bg-white text-gray-700">
                     {artifactRows.map((row) => (
-                      <tr key={row.rank}>
+                      <tr key={row.rank} className="hover:bg-slate-50">
                         <td className="px-4 py-3 font-semibold text-teal-700">{row.rank}</td>
                         <td className="px-4 py-3">{row.reason}</td>
                         <td className="px-4 py-3 text-right">{row.count}</td>
                         <td className="px-4 py-3 text-right">{row.ratio}</td>
+                        <td className="px-4 py-3">
+                          <StatusBadge status={row.status} />
+                        </td>
                         <td className="px-4 py-3">{row.sample}</td>
                       </tr>
                     ))}
@@ -500,7 +629,68 @@ export default function VocArtifactsSplitViewPage() {
             </div>
           )}
         </div>
+
+        <aside
+          className={cx(
+            "absolute right-0 top-0 z-20 h-full w-[420px] border-l border-gray-200 bg-white shadow-xl transition-transform duration-300",
+            isPromptSheetOpen ? "translate-x-0" : "translate-x-full"
+          )}
+        >
+          <div className="flex h-full flex-col">
+            <div className="border-b border-gray-200 px-5 py-4">
+              <h3 className="text-sm font-semibold text-gray-800">プロンプト登録</h3>
+              <p className="mt-1 text-xs text-gray-500">
+                現在の分析観点を再利用できるように保存します。
+              </p>
+            </div>
+            <div className="flex-1 space-y-4 overflow-y-auto p-5">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">
+                  プロンプト名
+                </label>
+                <input
+                  type="text"
+                  value={promptDraftName}
+                  onChange={(e) => setPromptDraftName(e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">
+                  内容
+                </label>
+                <textarea
+                  rows={11}
+                  value={promptDraftContent}
+                  onChange={(e) => setPromptDraftContent(e.target.value)}
+                  className="w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setIsPromptSheetOpen(false)}
+                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsPromptSheetOpen(false);
+                  alert("MoC: プロンプトを登録しました。");
+                }}
+                className="rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700"
+              >
+                登録
+              </button>
+            </div>
+          </div>
+        </aside>
       </section>
+      </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
   );
 }
@@ -528,5 +718,27 @@ function Toggle({
         )}
       />
     </button>
+  );
+}
+
+function StatusBadge({ status }: { status: ArtifactRow["status"] }) {
+  if (status === "risk-high") {
+    return (
+      <span className="inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">
+        解約リスク高
+      </span>
+    );
+  }
+  if (status === "risk-mid") {
+    return (
+      <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-600">
+        解約リスク中
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-600">
+      ポジティブ傾向
+    </span>
   );
 }
