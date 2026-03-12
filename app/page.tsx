@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   Calendar,
   ChevronLeft,
@@ -23,6 +24,12 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type OutputFormat = "text" | "table" | "markdown";
 
@@ -88,6 +95,17 @@ const FAVORITE_PROMPTS = [
   "応対品質の改善提案",
 ];
 
+const FAVORITE_PROMPT_PREVIEWS: Record<string, string> = {
+  "クレーム要因抽出（表形式）":
+    "以下の通話ログを分析し、解約リスクが高い発話を抽出してください。カテゴリ別に件数と代表例を表形式で提示し、優先度の高い改善アクションを3つ提案してください。",
+  "年代別ネガポジ集計":
+    "顧客年代ごとにネガティブ/ポジティブ発言を分類し、件数と比率を算出してください。年代間の差分が大きいトピックを上位3つ抽出し、要因仮説を添えてください。",
+  "解約理由の深掘り":
+    "解約理由トップ項目に紐づく通話を再抽出し、初回対応・説明品質・料金認識の観点で深掘りしてください。再発防止に向けた具体施策を箇条書きで示してください。",
+  "応対品質の改善提案":
+    "オペレーターの応対品質を評価し、共感姿勢・案内の明瞭性・解決速度の3軸でスコアリングしてください。低スコア要因とトレーニング施策を提案してください。",
+};
+
 const ARTIFACT_ROWS: ArtifactRow[] = [
   {
     rank: 1,
@@ -138,6 +156,7 @@ export default function VocArtifactsSplitViewPage() {
   const [promptDraftContent, setPromptDraftContent] = useState(
     "以下の通話ログを対象に、解約理由を分類し、上位3カテゴリの傾向と具体例を抽出してください。\n加えて、改善アクションを優先度順で提案してください。"
   );
+  const [isClient, setIsClient] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
 
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -268,6 +287,10 @@ export default function VocArtifactsSplitViewPage() {
     [artifactRows, artifactTitle, isAnalyzing]
   );
 
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
   return (
     <div className="flex h-screen overflow-hidden bg-white">
       <aside
@@ -298,16 +321,27 @@ export default function VocArtifactsSplitViewPage() {
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {FAVORITE_PROMPTS.map((item) => (
-              <button
-                key={item}
-                type="button"
-                className="mb-1 w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-slate-200"
-                title={item}
-              >
-                {sidebarCollapsed ? "•" : item}
-              </button>
-            ))}
+            <TooltipProvider delayDuration={120}>
+              {FAVORITE_PROMPTS.map((item) => (
+                <Tooltip key={item}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="mb-1 w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-slate-200"
+                      title={item}
+                    >
+                      {sidebarCollapsed ? "•" : item}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" align="start" className="max-w-xs whitespace-normal">
+                    <p className="font-semibold text-gray-800">{item}</p>
+                    <p className="mt-1 text-gray-600">
+                      {FAVORITE_PROMPT_PREVIEWS[item] ?? "このプロンプトの詳細は未設定です。"}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              ))}
+            </TooltipProvider>
           </div>
         </div>
       </aside>
@@ -470,7 +504,7 @@ export default function VocArtifactsSplitViewPage() {
               className="max-h-32 w-full resize-none overflow-y-auto bg-transparent text-sm text-gray-800 outline-none placeholder:text-gray-400"
               disabled={isAnalyzing}
             />
-            <div className="mt-2 flex items-center justify-between">
+            <div className="mt-2 flex items-end justify-between">
               <div className="flex flex-col gap-1 text-xs text-gray-600">
                 <span className="whitespace-nowrap font-medium">出力形式:</span>
                 <select
@@ -630,67 +664,74 @@ export default function VocArtifactsSplitViewPage() {
           )}
         </div>
 
-        <aside
-          className={cx(
-            "absolute right-0 top-0 z-20 h-full w-[420px] border-l border-gray-200 bg-white shadow-xl transition-transform duration-300",
-            isPromptSheetOpen ? "translate-x-0" : "translate-x-full"
-          )}
-        >
-          <div className="flex h-full flex-col">
-            <div className="border-b border-gray-200 px-5 py-4">
-              <h3 className="text-sm font-semibold text-gray-800">プロンプト登録</h3>
-              <p className="mt-1 text-xs text-gray-500">
-                現在の分析観点を再利用できるように保存します。
-              </p>
-            </div>
-            <div className="flex-1 space-y-4 overflow-y-auto p-5">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">
-                  プロンプト名
-                </label>
-                <input
-                  type="text"
-                  value={promptDraftName}
-                  onChange={(e) => setPromptDraftName(e.target.value)}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">
-                  内容
-                </label>
-                <textarea
-                  rows={11}
-                  value={promptDraftContent}
-                  onChange={(e) => setPromptDraftContent(e.target.value)}
-                  className="w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
-                />
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-4">
-              <button
-                type="button"
-                onClick={() => setIsPromptSheetOpen(false)}
-                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
-              >
-                キャンセル
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsPromptSheetOpen(false);
-                  alert("MoC: プロンプトを登録しました。");
-                }}
-                className="rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700"
-              >
-                登録
-              </button>
-            </div>
-          </div>
-        </aside>
       </section>
       </ResizablePanel>
       </ResizablePanelGroup>
+
+      {isClient &&
+        createPortal(
+          <aside
+            className={cx(
+              "fixed right-0 top-0 z-40 h-screen w-[420px] border-l border-gray-200 bg-white shadow-xl transition-transform duration-300",
+              isPromptSheetOpen ? "translate-x-0" : "translate-x-full"
+            )}
+          >
+            <div className="flex h-full flex-col">
+              <div className="border-b border-gray-200 px-5 py-4">
+                <h3 className="text-sm font-semibold text-gray-800">プロンプト登録</h3>
+                <p className="mt-1 text-xs text-gray-500">
+                  現在の分析観点を再利用できるように保存します。
+                </p>
+              </div>
+              <div className="overflow-y-auto p-5">
+                <div className="flex flex-col gap-6">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                      プロンプト名
+                    </label>
+                    <input
+                      type="text"
+                      value={promptDraftName}
+                      onChange={(e) => setPromptDraftName(e.target.value)}
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                      内容
+                    </label>
+                    <textarea
+                      rows={11}
+                      value={promptDraftContent}
+                      onChange={(e) => setPromptDraftContent(e.target.value)}
+                      className="w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsPromptSheetOpen(false)}
+                      className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                    >
+                      キャンセル
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsPromptSheetOpen(false);
+                        alert("MoC: プロンプトを登録しました。");
+                      }}
+                      className="rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700"
+                    >
+                      登録
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </aside>,
+          document.body
+        )}
     </div>
   );
 }
