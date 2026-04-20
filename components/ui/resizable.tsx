@@ -28,14 +28,19 @@ export const ResizablePanel = Panel;
 
 export function ResizableHandle({
   withHandle,
+  tabIndex,
   className = "",
   ...props
 }: React.ComponentProps<typeof Separator> & {
   withHandle?: boolean;
+  tabIndex?: number;
 }) {
+  const ariaProps = tabIndex !== undefined ? ({ tabIndex } as { tabIndex: number }) : {};
+
   return (
     <Separator
       className={`relative flex w-px items-center justify-center bg-gray-200 after:absolute after:inset-y-0 after:left-1/2 after:w-2 after:-translate-x-1/2 after:content-[''] hover:bg-teal-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 ${className}`}
+      {...ariaProps}
       {...props}
     >
       {withHandle ? (

@@ -2,50 +2,46 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import TextareaAutosize from "react-textarea-autosize";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
   Bot,
-  ChevronLeft,
-  ChevronRight,
+  ChevronDown,
   Copy,
   FileSpreadsheet,
-  FileText,
   Folder,
+  MessageSquare,
+  MoreHorizontal,
+  PanelLeft,
   Paperclip,
+  Pencil,
+  Pin,
+  PinOff,
   Plus,
   Save,
+  Search,
   Send,
   Star,
   Settings2,
+  Sparkles,
+  Table2,
   Trash2,
 } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 type OutputFormat = "text" | "table" | "markdown";
+
+type CentralTab = "chat" | "data";
 
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
   suggestChips?: string[];
-  showInlinePromptInput?: boolean;
   showExecutionCard?: boolean;
   executionPrompt?: string;
   assistantList?: {
@@ -53,6 +49,13 @@ type ChatMessage = {
     bullets: string[];
     outro: string;
   };
+};
+
+type ChatSession = {
+  id: string;
+  title: string;
+  date: string;
+  isPinned: boolean;
 };
 
 type ArtifactRow = {
@@ -64,37 +67,10 @@ type ArtifactRow = {
   sample: string;
 };
 
-const FIRST_ACTION_CHIPS = [
-  "経営・事業部への報告（VOC抽出）",
-  "現場の育成と応対品質（QA・評価）",
-  "業務効率・コストの改善（AHT短縮）",
-  "リスク・クレームの早期発見（炎上防止）",
-] as const;
-
 const SUGGEST_CARD_CONTENT: Record<
   string,
   { icon?: string; title: string; description: string }
 > = {
-  "経営・事業部への報告（VOC抽出）": {
-    icon: "🏢",
-    title: "経営・事業部への報告（VOC抽出）",
-    description: "解約の真因や、サービスへの隠れた要望・不満を抽出します。",
-  },
-  "現場の育成と応対品質（QA・評価）": {
-    icon: "👥",
-    title: "現場の育成と応対品質（QA・評価）",
-    description: "優秀者のトーク分析や、NG対応の検知、自動スコアリングを行います。",
-  },
-  "業務効率・コストの改善（AHT短縮）": {
-    icon: "📉",
-    title: "業務効率・コストの改善（AHT短縮）",
-    description: "通話が長引く原因の特定や、FAQ・マニュアルの改善点を探ります。",
-  },
-  "リスク・クレームの早期発見（炎上防止）": {
-    icon: "⚠️",
-    title: "リスク・クレームの早期発見（炎上防止）",
-    description: "激しいクレームや、コンプライアンス違反リスクのある通話を洗い出します。",
-  },
   "1位の理由を通話ログで深掘り": {
     title: "1位理由を深掘り",
     description: "上位要因に紐づく具体的な通話例を抽出します。",
@@ -105,69 +81,91 @@ const SUGGEST_CARD_CONTENT: Record<
   },
 };
 
-const FIRST_ACTION_RESPONSES: Record<
-  (typeof FIRST_ACTION_CHIPS)[number],
-  { intro: string; bullets: string[]; outro: string }
-> = {
-  "経営・事業部への報告（VOC抽出）": {
-    intro:
-      "『経営・事業部への報告』ですね、承知いたしました。今回のデータ群であれば、以下の2つの切り口で深掘りすると有益なレポートが作成できそうです。",
-    bullets: [
-      "解約・離脱リスクの真因特定",
-      "サービスへの潜在的な要望抽出",
-    ],
-    outro:
-      "もちろん、両方組み合わせたり、独自の気になるキーワードを追加していただいたりすることも可能です。どのように進めましょうか？",
-  },
-  "現場の育成と応対品質（QA・評価）": {
-    intro:
-      "『現場の育成と応対品質』ですね、承知いたしました。以下の2つの観点で分析を進めることができます。",
-    bullets: [
-      "ハイパフォーマーの暗黙知抽出",
-      "NG対応や説明不足の検知",
-    ],
-    outro:
-      "もちろん、両方組み合わせたり、独自の気になるキーワードを追加していただいたりすることも可能です。どのように進めましょうか？",
-  },
-  "業務効率・コストの改善（AHT短縮）": {
-    intro:
-      "『業務効率・コストの改善』ですね、承知いたしました。AHT短縮に向けて、以下の要因を特定できそうです。",
-    bullets: [
-      "通話長期化のボトルネック特定",
-      "FAQ・マニュアルの改善提案",
-    ],
-    outro:
-      "もちろん、両方組み合わせたり、独自の気になるキーワードを追加していただいたりすることも可能です。どのように進めましょうか？",
-  },
-  "リスク・クレームの早期発見（炎上防止）": {
-    intro:
-      "『リスク・クレームの早期発見』ですね、承知いたしました。以下のリスク要因を洗い出すことができます。",
-    bullets: [
-      "クレーム化のトリガー特定",
-      "コンプライアンス違反リスクの検知",
-    ],
-    outro:
-      "もちろん、両方組み合わせたり、独自の気になるキーワードを追加していただいたりすることも可能です。どのように進めましょうか？",
-  },
-};
+const WIZARD_PURPOSES = [
+  { id: "quality", emoji: "🎧", label: "オペレータ通話品質の分析" },
+  { id: "faq", emoji: "📚", label: "FAQ, QAの整備" },
+  { id: "trend", emoji: "📈", label: "成功・失敗の傾向分析" },
+  { id: "script", emoji: "📝", label: "スクリプトの整備" },
+  { id: "other", emoji: "✍️", label: "その他（自由記述）" },
+] as const;
 
-const FAVORITE_PROMPTS = [
-  "クレーム要因抽出（表形式）",
-  "年代別ネガポジ集計",
-  "解約理由の深掘り",
-  "応対品質の改善提案",
+type WizardPurposeId = (typeof WIZARD_PURPOSES)[number]["id"];
+
+const WIZARD_DATE_PRESETS: { id: "today" | "week" | "lastMonth"; label: string }[] = [
+  { id: "today", label: "今日" },
+  { id: "week", label: "今週" },
+  { id: "lastMonth", label: "先月" },
 ];
 
-const FAVORITE_PROMPT_PREVIEWS: Record<string, string> = {
-  "クレーム要因抽出（表形式）":
-    "以下の通話ログを分析し、解約リスクが高い発話を抽出してください。カテゴリ別に件数と代表例を表形式で提示し、優先度の高い改善アクションを3つ提案してください。",
-  "年代別ネガポジ集計":
-    "顧客年代ごとにネガティブ/ポジティブ発言を分類し、件数と比率を算出してください。年代間の差分が大きいトピックを上位3つ抽出し、要因仮説を添えてください。",
-  "解約理由の深掘り":
-    "解約理由トップ項目に紐づく通話を再抽出し、初回対応・説明品質・料金認識の観点で深掘りしてください。再発防止に向けた具体施策を箇条書きで示してください。",
-  "応対品質の改善提案":
-    "オペレーターの応対品質を評価し、共感姿勢・案内の明瞭性・解決速度の3軸でスコアリングしてください。低スコア要因とトレーニング施策を提案してください。",
+const WIZARD_BUSINESS_OPTIONS = [
+  "解約受付センター",
+  "料金問合せ窓口",
+  "契約変更サポート",
+];
+
+const WIZARD_SKILL_OPTIONS = ["新人", "中堅", "ベテラン"];
+
+const WIZARD_ADVANCED_FIELDS = [
+  { id: "callStart", label: "通話開始日時", type: "datetime-local" as const },
+  { id: "callEnd", label: "終了日時", type: "datetime-local" as const },
+  { id: "phone", label: "顧客電話番号", type: "text" as const, placeholder: "例: 090-xxxx-xxxx" },
+  { id: "ngWord", label: "NGワード", type: "text" as const, placeholder: "例: 解約, 値上げ" },
+  { id: "callDuration", label: "通話時間", type: "text" as const, placeholder: "例: 5分以上" },
+  { id: "holdDuration", label: "保留時間", type: "text" as const, placeholder: "例: 30秒以上" },
+  { id: "direction", label: "通話方向", type: "select" as const, options: ["すべて", "インバウンド", "アウトバウンド"] },
+  { id: "group", label: "グループ", type: "select" as const, options: ["すべて", "Aチーム", "Bチーム", "新人"] },
+];
+
+type CallRecord = {
+  id: string;
+  startedAt: string;
+  duration: string;
+  operator: string;
+  business: string;
+  phone: string;
 };
+
+const MOCK_CALL_RECORDS: CallRecord[] = [
+  {
+    id: "call-1",
+    startedAt: "2026/03/27 09:12",
+    duration: "06:32",
+    operator: "鈴木 直子",
+    business: "解約受付センター",
+    phone: "090-1234-5678",
+  },
+  {
+    id: "call-2",
+    startedAt: "2026/03/27 09:45",
+    duration: "04:11",
+    operator: "田中 健一",
+    business: "料金問合せ窓口",
+    phone: "080-9876-5432",
+  },
+  {
+    id: "call-3",
+    startedAt: "2026/03/27 10:20",
+    duration: "12:05",
+    operator: "佐藤 美咲",
+    business: "契約変更サポート",
+    phone: "070-2468-1357",
+  },
+  {
+    id: "call-4",
+    startedAt: "2026/03/27 10:58",
+    duration: "03:47",
+    operator: "山本 拓也",
+    business: "解約受付センター",
+    phone: "090-1111-2222",
+  },
+];
+
+const MOCK_SESSIONS: ChatSession[] = [
+  { id: "1", title: "【月次】2026年3月 解約分析", date: "今日", isPinned: true },
+  { id: "2", title: "新人オペレーターの保留時間傾向", date: "昨日", isPinned: false },
+  { id: "3", title: "キャンペーンCのクレーム抽出", date: "過去7日間", isPinned: false },
+  { id: "4", title: "料金改定に関するVOCまとめ", date: "過去30日間", isPinned: false },
+];
 
 const ARTIFACT_ROWS: ArtifactRow[] = [
   {
@@ -205,9 +203,9 @@ function cx(...parts: Array<string | false | null | undefined>) {
 }
 
 export default function VocArtifactsSplitViewPage() {
+  const sidebarRef = useRef<PanelImperativeHandle | null>(null);
+  const rightPanelRef = useRef<PanelImperativeHandle | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [reportName, setReportName] = useState("新規作成");
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [settingOpen, setSettingOpen] = useState(false);
   const [maskPii, setMaskPii] = useState(true);
   const [analyzePerCall, setAnalyzePerCall] = useState(false);
@@ -220,22 +218,12 @@ export default function VocArtifactsSplitViewPage() {
     "以下の通話ログを対象に、解約理由を分類し、上位3カテゴリの傾向と具体例を抽出してください。\n加えて、改善アクションを優先度順で提案してください。"
   );
   const [isClient, setIsClient] = useState(false);
-  const [isCreatePromptDialogOpen, setIsCreatePromptDialogOpen] = useState(false);
-  const [newPromptName, setNewPromptName] = useState("");
-  const [newPromptContent, setNewPromptContent] = useState("");
-  const [inlinePromptInput, setInlinePromptInput] = useState("");
   const [hasAttachedFile, setHasAttachedFile] = useState(false);
+  const [activeTab, setActiveTab] = useState<CentralTab>("chat");
+  const [openMenuSessionId, setOpenMenuSessionId] = useState<string | null>(null);
+  const [highlightedCallId, setHighlightedCallId] = useState<string | null>(null);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: createId(),
-      role: "assistant",
-      text:
-        "100件の通話データの読み込みが完了しました。お疲れ様です。\nさっそく分析を始めましょう。今回は、どのようなセンター課題の解決に向けてデータを活用したいですか？\n現在のお悩みに最も近いテーマをお選びいただくか、下部の入力欄から自由に教えてください。",
-      suggestChips: [...FIRST_ACTION_CHIPS],
-      showInlinePromptInput: true,
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   // Left/Right を跨いで利用する分析状態（親レベル管理）
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -244,7 +232,6 @@ export default function VocArtifactsSplitViewPage() {
   const [artifactTitle, setArtifactTitle] = useState("分析レポート結果（未実行）");
   const [artifactSummary, setArtifactSummary] = useState("");
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const analyzingTimeoutRef = useRef<number | null>(null);
   const canSend = chatInput.trim().length > 0 && !isAnalyzing;
 
@@ -257,7 +244,6 @@ export default function VocArtifactsSplitViewPage() {
     options?: {
       chips?: string[];
       assistantList?: ChatMessage["assistantList"];
-      showInlinePromptInput?: boolean;
       showExecutionCard?: boolean;
       executionPrompt?: string;
     }
@@ -270,17 +256,10 @@ export default function VocArtifactsSplitViewPage() {
         text,
         suggestChips: options?.chips,
         assistantList: options?.assistantList,
-        showInlinePromptInput: options?.showInlinePromptInput,
         showExecutionCard: options?.showExecutionCard,
         executionPrompt: options?.executionPrompt,
       },
     ]);
-  };
-
-  const resizeTextarea = () => {
-    if (!textareaRef.current) return;
-    textareaRef.current.style.height = "0px";
-    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
   };
 
   const cancelAnalysis = () => {
@@ -308,6 +287,8 @@ export default function VocArtifactsSplitViewPage() {
     setArtifactTitle(
       `分析レポート結果（${format === "text" ? "テキスト" : format === "table" ? "表形式" : "Markdown"}）`
     );
+    setHighlightedCallId(null);
+    rightPanelRef.current?.collapse();
 
     analyzingTimeoutRef.current = window.setTimeout(() => {
       setArtifactRows(ARTIFACT_ROWS);
@@ -316,6 +297,7 @@ export default function VocArtifactsSplitViewPage() {
       );
       setIsAnalyzing(false);
       setShowResult(true);
+      rightPanelRef.current?.resize("40%");
       analyzingTimeoutRef.current = null;
       options?.onFinished?.();
     }, 3000);
@@ -335,44 +317,19 @@ export default function VocArtifactsSplitViewPage() {
     });
   };
 
-  const isFirstActionChip = (
-    chip: string
-  ): chip is (typeof FIRST_ACTION_CHIPS)[number] =>
-    (FIRST_ACTION_CHIPS as readonly string[]).includes(chip);
-
   const handleSuggestClick = (chip: string) => {
-    if (isFirstActionChip(chip)) {
-      appendUserMessage(chip);
-      window.setTimeout(() => {
-        appendAssistantMessage("", {
-          assistantList: FIRST_ACTION_RESPONSES[chip],
-          showExecutionCard: true,
-          executionPrompt: `${chip}\n\n分析観点: ${FIRST_ACTION_RESPONSES[chip].bullets.join(" / ")}`,
-        });
-      }, 700);
-      return;
-    }
     runAnalysis(chip);
   };
 
-  const handleInlinePromptSubmit = () => {
-    const prompt = inlinePromptInput.trim();
-    if (!prompt) return;
-    appendUserMessage(prompt);
-    setInlinePromptInput("");
-    window.setTimeout(() => {
-      appendAssistantMessage("", {
-        assistantList: {
-          intro:
-            "ありがとうございます。ご入力内容を起点に、次の2ステップで整理すると実行しやすくなります。",
-          bullets: [
-            "課題の対象を特定（対象顧客・対象業務・対象期間の明確化）",
-            "成果物の形式を確定（経営報告向け要約 or 現場改善向け詳細）",
-          ],
-          outro: "必要に応じて、実行待機カードから分析を開始できます。",
-        },
-      });
-    }, 700);
+  const handleWizardSubmit = () => {
+    if (isAnalyzing) return;
+    appendUserMessage("指定した条件で通話データを検索し、分析を実行してください。");
+    startAnalysis("table", {
+      onFinished: () => {
+        appendAssistantMessage("分析が完了しました。右ペインをご確認ください。");
+        rightPanelRef.current?.resize("40%");
+      },
+    });
   };
 
   const handleBottomSend = () => {
@@ -381,16 +338,12 @@ export default function VocArtifactsSplitViewPage() {
     appendUserMessage(text);
     setChatInput("");
     window.setTimeout(() => {
-      if (hasAttachedFile) {
-        setShowResult(false);
-        appendAssistantMessage(
-          "ファイル『評価フォーマット.xlsx』を読み込みました。この評価軸に沿って分析を実行します。",
-          {
-            showExecutionCard: true,
-            executionPrompt: `${text}\n\n添付ファイル: 評価フォーマット.xlsx`,
-          }
-        );
-      }
+      appendAssistantMessage("指示を受け付けました。分析を更新します。");
+      startAnalysis("table", {
+        onFinished: () => {
+          rightPanelRef.current?.resize("40%");
+        },
+      });
     }, 700);
   };
 
@@ -412,16 +365,27 @@ export default function VocArtifactsSplitViewPage() {
     alert("MoC: Excel出力を実行する想定です。");
   };
 
+  const handleCitationClick = (callId: string) => {
+    setActiveTab("data");
+    setHighlightedCallId(callId);
+  };
+
   const handleReset = () => {
     cancelAnalysis();
     setArtifactRows(null);
     setArtifactSummary("");
     setArtifactTitle("分析レポート結果（未実行）");
     setShowResult(false);
+    rightPanelRef.current?.collapse();
   };
 
-  const handleCreatePromptRegister = () => {
-    setIsCreatePromptDialogOpen(false);
+  const handleSidebarToggle = () => {
+    if (!sidebarRef.current) return;
+    if (sidebarRef.current.isCollapsed()) {
+      sidebarRef.current.resize("20%");
+    } else {
+      sidebarRef.current.collapse();
+    }
   };
 
   const previewTitle = useMemo(
@@ -448,119 +412,237 @@ export default function VocArtifactsSplitViewPage() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-white">
-      <aside
-        className={cx(
-          "border-r border-gray-200 bg-slate-50 transition-all duration-200",
-          sidebarCollapsed ? "w-14" : "w-64"
-        )}
+      <ResizablePanelGroup direction="horizontal" className="flex-1">
+      <ResizablePanel
+        panelRef={sidebarRef}
+        defaultSize="20%"
+        minSize="20%"
+        maxSize="20%"
+        collapsible={true}
+        collapsedSize={0}
+        onResize={(size) => setSidebarCollapsed(size.asPercentage <= 1)}
       >
-        <div className="flex h-full flex-col">
-          <div className="flex items-center justify-between border-b border-gray-200 px-3 py-3">
-            {!sidebarCollapsed && (
+        <aside className="h-full border-r border-gray-200 bg-slate-50">
+          <div
+            className={cx(
+              "flex h-full flex-col overflow-hidden transition-opacity duration-150",
+              sidebarCollapsed ? "pointer-events-none opacity-0" : "opacity-100"
+            )}
+          >
+            <div className="flex items-center justify-between border-b border-gray-200 px-3 py-3">
               <div className="flex shrink-0 items-center gap-2 whitespace-nowrap text-sm font-semibold text-gray-700">
                 <Folder className="h-4 w-4" />
-                お気に入りプロンプト
+                セッション履歴
               </div>
-            )}
-            <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setIsCreatePromptDialogOpen(true)}
+                onClick={() => {
+                  setMessages([]);
+                  setActiveTab("chat");
+                  rightPanelRef.current?.collapse();
+                }}
                 className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-gray-200 bg-white px-2 text-[11px] font-medium text-gray-700 hover:bg-slate-100"
-                title="新規プロンプト作成"
+                title="新規セッション作成"
               >
                 <Plus className="h-3.5 w-3.5" />
-                {!sidebarCollapsed ? "新規作成" : null}
-              </button>
-              <button
-                type="button"
-                onClick={() => setSidebarCollapsed((v) => !v)}
-                className="rounded-md p-1 text-gray-500 hover:bg-slate-200 hover:text-gray-700"
-                title={sidebarCollapsed ? "サイドバーを展開" : "サイドバーを折りたたむ"}
-              >
-                {sidebarCollapsed ? (
-                  <ChevronRight className="h-4 w-4" />
-                ) : (
-                  <ChevronLeft className="h-4 w-4" />
-                )}
+                新規作成
               </button>
             </div>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2">
-            <TooltipProvider delayDuration={120}>
-              {FAVORITE_PROMPTS.map((item) => (
-                <Tooltip key={item}>
-                  <TooltipTrigger asChild>
+            <div className="shrink-0 space-y-2 border-b border-gray-200 px-3 py-2.5">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="🔍 履歴検索"
+                  className="h-8 w-full rounded-md border border-gray-200 bg-white pl-8 pr-2 text-xs text-gray-700 placeholder:text-gray-400 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                />
+              </div>
+              <button
+                type="button"
+                className="inline-flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-teal-700 transition hover:bg-teal-50"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                ✨ プロンプトテンプレート管理
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2">
+              <div className="space-y-1">
+                {MOCK_SESSIONS.map((session) => (
+                  <div
+                    key={session.id}
+                    className="group relative rounded-md border border-transparent transition hover:border-slate-200 hover:bg-slate-100"
+                  >
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        setActiveTab("chat");
+                        setMessages([
+                          {
+                            id: "dummy1",
+                            role: "user",
+                            text: "過去の分析データを開きました。",
+                          },
+                          {
+                            id: "dummy2",
+                            role: "assistant",
+                            text: "分析結果は右ペインの通りです。",
+                          },
+                        ]);
+                        rightPanelRef.current?.resize("40%");
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                        }
+                      }}
+                      className="cursor-pointer px-3 py-2 text-left outline-none"
+                    >
+                      <div className="flex items-start justify-between gap-2 pr-6">
+                        <p className="text-sm text-gray-700">{session.title}</p>
+                        {session.isPinned ? (
+                          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                            固定
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-[11px] text-gray-400">{session.date}</p>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => setChatInput(FAVORITE_PROMPT_PREVIEWS[item] ?? item)}
-                      className="mb-1 w-full cursor-pointer rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-slate-200"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenuSessionId((prev) =>
+                          prev === session.id ? null : session.id
+                        );
+                      }}
+                      className={cx(
+                        "absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md text-gray-500 transition hover:bg-slate-200 hover:text-gray-700 focus:opacity-100 group-hover:opacity-100",
+                        openMenuSessionId === session.id ? "opacity-100" : "opacity-0"
+                      )}
+                      title="操作メニュー"
                     >
-                      {sidebarCollapsed ? "•" : item}
+                      <MoreHorizontal className="h-4 w-4" />
                     </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" align="start" className="max-w-xs whitespace-normal">
-                    <p className="font-semibold text-gray-800">{item}</p>
-                    <p className="mt-1 text-gray-600">
-                      {FAVORITE_PROMPT_PREVIEWS[item] ?? "このプロンプトの詳細は未設定です。"}
-                    </p>
-                    <div className="mt-2 border-t border-gray-200 pt-2 text-[10px] text-gray-400">
-                      👤 作成者: 根本 | 🕒 登録日: 2026/03/17
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
-              ))}
-            </TooltipProvider>
+                    {openMenuSessionId === session.id ? (
+                      <>
+                        <div
+                          className="fixed inset-0 z-40"
+                          onClick={() => setOpenMenuSessionId(null)}
+                        />
+                        <div
+                          role="menu"
+                          className="absolute right-1.5 top-8 z-50 w-44 overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg"
+                        >
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => setOpenMenuSessionId(null)}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-slate-50"
+                          >
+                            {session.isPinned ? (
+                              <>
+                                <PinOff className="h-3.5 w-3.5 text-gray-500" />
+                                固定解除
+                              </>
+                            ) : (
+                              <>
+                                <Pin className="h-3.5 w-3.5 text-gray-500" />
+                                固定
+                              </>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => setOpenMenuSessionId(null)}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-slate-50"
+                          >
+                            <Pencil className="h-3.5 w-3.5 text-gray-500" />
+                            名称を変更
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => setOpenMenuSessionId(null)}
+                            className="flex w-full items-center gap-2 border-t border-gray-100 px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            削除
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
-      </aside>
-
-      <ResizablePanelGroup direction="horizontal" className="flex-1">
-      <ResizablePanel defaultSize={40} minSize={30}>
+        </aside>
+      </ResizablePanel>
+      <ResizableHandle disabled={true} tabIndex={-1} className="pointer-events-none cursor-default w-px bg-border outline-none ring-0 focus:ring-0 focus-visible:ring-0" />
+      <ResizablePanel defaultSize="36%" minSize="25%">
       <section className="flex h-full min-w-[450px] flex-col border-r border-gray-200 bg-white font-sans text-sm antialiased">
         <div className="flex h-full flex-col">
         <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              {isEditingTitle ? (
-                <input
-                  autoFocus
-                  value={reportName}
-                  onChange={(e) => setReportName(e.target.value)}
-                  onBlur={() => setIsEditingTitle(false)}
-                  className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm font-semibold text-gray-800 outline-none ring-2 ring-teal-100"
-                />
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setIsEditingTitle(true)}
-                  className="text-left text-sm font-semibold text-gray-800 hover:text-teal-700"
-                >
-                  {reportName}
-                </button>
-              )}
-              <div className="mt-1 text-xs text-gray-500">
-                🔍 検索条件: 2026/01/01〜01/14 | 担当者: すべて | 抽出: 100件
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-                <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px]">
-                  <FileText className="h-3 w-3" />
-                  参照中: 100件の通話データ
-                </span>
-              </div>
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={handleSidebarToggle}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-200 text-gray-600 hover:bg-slate-100 hover:text-gray-800"
+              title="サイドバー開閉"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+
+            <div
+              role="tablist"
+              aria-label="中央ペイン表示切り替え"
+              className="inline-flex items-center rounded-lg border border-gray-200 bg-gray-50 p-1 text-xs"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "chat"}
+                onClick={() => setActiveTab("chat")}
+                className={cx(
+                  "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition",
+                  activeTab === "chat"
+                    ? "bg-white text-teal-700 shadow-sm"
+                    : "text-gray-600 hover:text-gray-800"
+                )}
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                対話モード
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "data"}
+                onClick={() => setActiveTab("data")}
+                className={cx(
+                  "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition",
+                  activeTab === "data"
+                    ? "bg-white text-teal-700 shadow-sm"
+                    : "text-gray-600 hover:text-gray-800"
+                )}
+              >
+                <Table2 className="h-3.5 w-3.5" />
+                抽出データ（150件）
+              </button>
             </div>
 
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setSettingOpen((v) => !v)}
-                className="rounded-md border border-gray-200 p-2 text-gray-600 hover:border-teal-300 hover:text-teal-700"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-200 p-0 text-gray-600 hover:border-teal-300 hover:text-teal-700"
                 title="分析設定"
               >
                 <Settings2 className="h-4 w-4" />
               </button>
               {settingOpen && (
-                <div className="absolute right-0 top-11 w-72 rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg">
+                <div className="absolute right-0 top-10 z-20 w-72 rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg">
                   <div className="mb-2 font-semibold text-gray-700">分析設定</div>
                   <div className="space-y-2">
                     <label className="flex items-center justify-between">
@@ -579,6 +661,60 @@ export default function VocArtifactsSplitViewPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-4">
+          {activeTab === "data" ? (
+            <div className="rounded-lg border border-gray-200 bg-white">
+              <div className="border-b border-gray-200 px-4 py-3">
+                <h3 className="text-sm font-semibold text-gray-800">VLOOM対応履歴一覧</h3>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  抽出期間: 2026/01/01〜01/14 ／ 対象: 150件中 4件表示
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] table-fixed text-xs">
+                  <thead className="bg-slate-50 text-gray-600">
+                    <tr>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium">通話開始</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium">通話時間</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium">応対ユーザー</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium">業務名</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium">顧客電話番号</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {MOCK_CALL_RECORDS.map((row) => {
+                      const highlighted = highlightedCallId === row.id;
+                      return (
+                        <tr
+                          key={row.id}
+                          className={cx(
+                            "transition",
+                            highlighted
+                              ? "bg-yellow-100 ring-1 ring-inset ring-yellow-300"
+                              : "hover:bg-slate-50"
+                          )}
+                        >
+                          <td className="whitespace-nowrap px-3 py-2 text-gray-800">
+                            {highlighted ? (
+                              <span className="mr-1 inline-flex items-center rounded bg-yellow-200 px-1 text-[10px] font-semibold text-yellow-800">
+                                根拠
+                              </span>
+                            ) : null}
+                            {row.startedAt}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2 text-gray-700">{row.duration}</td>
+                          <td className="whitespace-nowrap px-3 py-2 text-gray-700">{row.operator}</td>
+                          <td className="whitespace-nowrap px-3 py-2 text-gray-700">{row.business}</td>
+                          <td className="whitespace-nowrap px-3 py-2 font-mono text-gray-700">{row.phone}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : messages.length === 0 ? (
+            <AnalysisWizard onSubmit={handleWizardSubmit} />
+          ) : (
           <div className="space-y-6 py-2">
             {messages.map((m) => (
               <div
@@ -635,35 +771,6 @@ export default function VocArtifactsSplitViewPage() {
                           })}
                         </div>
                       )}
-                      {m.showInlinePromptInput ? (
-                        <div className="mt-4 rounded-lg bg-slate-50 p-4">
-                          <p className="text-xs font-medium text-gray-600">
-                            または、具体的なお悩みやキーワードを自由に入力：
-                          </p>
-                          <div className="mt-2 flex items-center gap-2">
-                            <input
-                              type="text"
-                              value={inlinePromptInput}
-                              onChange={(e) => setInlinePromptInput(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  handleInlinePromptSubmit();
-                                }
-                              }}
-                              placeholder="例: 新人オペレーターの離脱につながる会話傾向を知りたい"
-                              className="h-10 flex-1 rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
-                            />
-                            <button
-                              type="button"
-                              onClick={handleInlinePromptSubmit}
-                              className="inline-flex h-10 items-center rounded-md bg-teal-600 px-4 text-xs font-semibold text-white hover:bg-teal-700"
-                            >
-                              送信
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
                       {m.showExecutionCard ? (
                         <div className="mt-3 w-full rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                           <p className="text-sm font-semibold text-gray-800">
@@ -724,6 +831,7 @@ export default function VocArtifactsSplitViewPage() {
               </div>
             ))}
           </div>
+          )}
         </div>
 
         <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3">
@@ -748,13 +856,12 @@ export default function VocArtifactsSplitViewPage() {
               >
                 <Paperclip className="h-4 w-4" />
               </button>
-              <textarea
-                ref={textareaRef}
-                rows={1}
+              <TextareaAutosize
+                minRows={1}
+                maxRows={8}
                 value={chatInput}
                 onChange={(e) => {
                   setChatInput(e.target.value);
-                  resizeTextarea();
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -782,7 +889,13 @@ export default function VocArtifactsSplitViewPage() {
       </section>
       </ResizablePanel>
       <ResizableHandle withHandle />
-      <ResizablePanel defaultSize={60} minSize={40}>
+      <ResizablePanel
+        panelRef={rightPanelRef}
+        defaultSize={0}
+        minSize="30%"
+        collapsible={true}
+        collapsedSize={0}
+      >
 
       <section className="relative flex min-w-[500px] flex-col overflow-hidden bg-white">
         <div
@@ -868,7 +981,17 @@ export default function VocArtifactsSplitViewPage() {
             <div className="space-y-6">
               <div>
                 <h3 className="text-lg font-semibold text-gray-800">解約理由分析（TOP3）</h3>
-                <p className="mt-1 text-sm text-gray-600">{artifactSummary}</p>
+                <p className="mt-1 text-sm leading-6 text-gray-600">
+                  {artifactSummary}
+                  <button
+                    type="button"
+                    onClick={() => handleCitationClick("call-1")}
+                    className="mx-1 rounded border border-teal-200 bg-teal-50 px-1 align-baseline text-xs font-bold text-teal-600 hover:bg-teal-100 hover:underline"
+                    title="根拠となる通話データを開く"
+                  >
+                    [1]
+                  </button>
+                </p>
               </div>
               <div className="overflow-hidden rounded-xl border border-gray-200">
                 <table className="min-w-full text-sm">
@@ -892,7 +1015,19 @@ export default function VocArtifactsSplitViewPage() {
                         <td className="px-4 py-3">
                           <StatusBadge status={row.status} />
                         </td>
-                        <td className="px-4 py-3">{row.sample}</td>
+                        <td className="px-4 py-3">
+                          {row.sample}
+                          {row.rank === 1 ? (
+                            <button
+                              type="button"
+                              onClick={() => handleCitationClick("call-1")}
+                              className="ml-1 rounded border border-teal-200 bg-teal-50 px-1 align-baseline text-xs font-bold text-teal-600 hover:bg-teal-100 hover:underline"
+                              title="根拠となる通話データを開く"
+                            >
+                              [1]
+                            </button>
+                          ) : null}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -971,54 +1106,6 @@ export default function VocArtifactsSplitViewPage() {
           document.body
         )}
 
-      <Dialog open={isCreatePromptDialogOpen} onOpenChange={setIsCreatePromptDialogOpen}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>新規プロンプト作成</DialogTitle>
-            <DialogDescription>
-              よく使う分析テンプレートを事前に登録します（MoCモック）。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="mt-4 space-y-4">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">プロンプト名</label>
-              <input
-                type="text"
-                value={newPromptName}
-                onChange={(e) => setNewPromptName(e.target.value)}
-                placeholder="例: 解約理由の深掘り分析"
-                className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">内容</label>
-              <textarea
-                rows={6}
-                value={newPromptContent}
-                onChange={(e) => setNewPromptContent(e.target.value)}
-                placeholder="分析したい観点、出力形式、制約条件などを記入"
-                className="w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <button
-              type="button"
-              onClick={() => setIsCreatePromptDialogOpen(false)}
-              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
-            >
-              キャンセル
-            </button>
-            <button
-              type="button"
-              onClick={handleCreatePromptRegister}
-              className="rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700"
-            >
-              登録
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -1046,6 +1133,346 @@ function Toggle({
         )}
       />
     </button>
+  );
+}
+
+function AnalysisWizard({
+  onSubmit,
+}: {
+  onSubmit: (summary: string, executionPrompt: string) => void;
+}) {
+  const [purpose, setPurpose] = useState<WizardPurposeId | null>(null);
+  const [purposeOther, setPurposeOther] = useState("");
+  const [datePreset, setDatePreset] = useState<"today" | "week" | "lastMonth" | null>(null);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [business, setBusiness] = useState<string[]>([]);
+  const [skill, setSkill] = useState<string[]>([]);
+  const [userName, setUserName] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [advancedValues, setAdvancedValues] = useState<Record<string, string>>({});
+
+  const purposeLabel = useMemo(() => {
+    if (!purpose) return null;
+    const entry = WIZARD_PURPOSES.find((p) => p.id === purpose);
+    if (!entry) return null;
+    if (purpose === "other") {
+      return purposeOther.trim() ? `その他: ${purposeOther.trim()}` : null;
+    }
+    return entry.label;
+  }, [purpose, purposeOther]);
+
+  const dateRangeLabel = useMemo(() => {
+    if (datePreset === "today") return "今日";
+    if (datePreset === "week") return "今週";
+    if (datePreset === "lastMonth") return "先月";
+    if (dateFrom && dateTo) return `${dateFrom} 〜 ${dateTo}`;
+    if (dateFrom) return `${dateFrom} 〜`;
+    if (dateTo) return `〜 ${dateTo}`;
+    return null;
+  }, [datePreset, dateFrom, dateTo]);
+
+  const canRun = Boolean(purposeLabel);
+
+  const handleRun = () => {
+    if (!canRun) return;
+    const base: string[] = [];
+    if (purposeLabel) base.push(`目的: ${purposeLabel}`);
+    if (dateRangeLabel) base.push(`期間: ${dateRangeLabel}`);
+    if (business.length) base.push(`業務名: ${business.join(", ")}`);
+    if (skill.length) base.push(`スキル: ${skill.join(", ")}`);
+    if (userName.trim()) base.push(`ユーザー名: ${userName.trim()}`);
+
+    const advancedLines = WIZARD_ADVANCED_FIELDS.flatMap((field) => {
+      const v = advancedValues[field.id];
+      if (!v || (field.type === "select" && v === "すべて")) return [];
+      return [`${field.label}: ${v}`];
+    });
+
+    const summary = base.join(" / ");
+    const executionPrompt = [
+      "【問診票による分析リクエスト】",
+      ...base,
+      ...(advancedLines.length ? ["", "■ 詳細条件", ...advancedLines] : []),
+    ].join("\n");
+
+    onSubmit(summary, executionPrompt);
+  };
+
+  return (
+    <div className="mx-auto w-full max-w-2xl py-4">
+      <div className="flex gap-4">
+        <div className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+          <Bot className="h-4 w-4" />
+        </div>
+        <div className="w-full space-y-6 text-sm leading-7 text-gray-800">
+          <p>
+            全データにアクセス可能です。どのような通話を分析しますか？
+            <br />
+            以下の問診票に答えていただくと、最適な条件で検索を実行します。
+          </p>
+
+          {/* Q1. 目的 */}
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-semibold text-teal-700">
+                Q1
+              </span>
+              <p className="text-sm font-semibold text-gray-800">
+                分析の目的を教えてください
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              {WIZARD_PURPOSES.map((p, idx) => {
+                const selected = purpose === p.id;
+                const isLast = idx === WIZARD_PURPOSES.length - 1;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setPurpose(p.id)}
+                    className={cx(
+                      "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-xs transition",
+                      isLast ? "col-span-2" : "",
+                      selected
+                        ? "border-teal-400 bg-teal-50 text-teal-800 shadow-sm"
+                        : "border-slate-200 bg-white text-gray-700 hover:border-teal-200 hover:bg-teal-50/40"
+                    )}
+                  >
+                    <span className="text-base leading-none">{p.emoji}</span>
+                    <span className="font-medium">{p.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {purpose === "other" ? (
+              <input
+                type="text"
+                value={purposeOther}
+                onChange={(e) => setPurposeOther(e.target.value)}
+                placeholder="分析したい目的を自由にご記入ください"
+                className="mt-3 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
+              />
+            ) : null}
+          </section>
+
+          {/* Q2. 期間 */}
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-semibold text-teal-700">
+                Q2
+              </span>
+              <p className="text-sm font-semibold text-gray-800">対象期間を選んでください</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {WIZARD_DATE_PRESETS.map((preset) => {
+                const selected = datePreset === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => {
+                      setDatePreset(preset.id);
+                      setDateFrom("");
+                      setDateTo("");
+                    }}
+                    className={cx(
+                      "rounded-full border px-3 py-1 text-xs font-medium transition",
+                      selected
+                        ? "border-teal-400 bg-teal-50 text-teal-800"
+                        : "border-slate-200 bg-white text-gray-600 hover:border-teal-200 hover:bg-teal-50/40"
+                    )}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-600">
+              <span className="text-gray-500">または範囲指定</span>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => {
+                  setDateFrom(e.target.value);
+                  setDatePreset(null);
+                }}
+                className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
+              />
+              <span className="text-gray-400">〜</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => {
+                  setDateTo(e.target.value);
+                  setDatePreset(null);
+                }}
+                className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
+              />
+            </div>
+          </section>
+
+          {/* Q3. 詳細条件 */}
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-semibold text-teal-700">
+                Q3
+              </span>
+              <p className="text-sm font-semibold text-gray-800">詳細条件を指定します</p>
+            </div>
+            <div className="grid grid-cols-3 items-start gap-2.5">
+              <div className="flex flex-col gap-1 text-[11px] text-gray-500">
+                <div className="flex items-center justify-between">
+                  <span>業務名（複数選択可）</span>
+                  {business.length ? (
+                    <span className="rounded-full bg-teal-50 px-1.5 py-0.5 text-[10px] font-semibold text-teal-700">
+                      {business.length}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex h-28 flex-col gap-1 overflow-y-auto rounded-md border border-slate-200 bg-white p-2">
+                  {WIZARD_BUSINESS_OPTIONS.map((opt) => {
+                    const checked = business.includes(opt);
+                    return (
+                      <label
+                        key={opt}
+                        className={cx(
+                          "inline-flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs transition",
+                          checked ? "bg-teal-50 text-teal-800" : "text-gray-700 hover:bg-slate-50"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setBusiness((prev) => [...prev, opt]);
+                            } else {
+                              setBusiness((prev) => prev.filter((v) => v !== opt));
+                            }
+                          }}
+                          className="h-3.5 w-3.5 shrink-0 accent-teal-600"
+                        />
+                        <span className="truncate">{opt}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1 text-[11px] text-gray-500">
+                <div className="flex items-center justify-between">
+                  <span>スキル（複数選択可）</span>
+                  {skill.length ? (
+                    <span className="rounded-full bg-teal-50 px-1.5 py-0.5 text-[10px] font-semibold text-teal-700">
+                      {skill.length}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex h-28 flex-col gap-1 overflow-y-auto rounded-md border border-slate-200 bg-white p-2">
+                  {WIZARD_SKILL_OPTIONS.map((opt) => {
+                    const checked = skill.includes(opt);
+                    return (
+                      <label
+                        key={opt}
+                        className={cx(
+                          "inline-flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs transition",
+                          checked ? "bg-teal-50 text-teal-800" : "text-gray-700 hover:bg-slate-50"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSkill((prev) => [...prev, opt]);
+                            } else {
+                              setSkill((prev) => prev.filter((v) => v !== opt));
+                            }
+                          }}
+                          className="h-3.5 w-3.5 shrink-0 accent-teal-600"
+                        />
+                        <span className="truncate">{opt}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <label className="flex flex-col gap-1 text-[11px] text-gray-500">
+                ユーザー名
+                <input
+                  type="text"
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                  placeholder="例: 山田 太郎"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
+                />
+              </label>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="mt-4 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-teal-700 hover:bg-teal-50"
+            >
+              <ChevronDown
+                className={cx(
+                  "h-3.5 w-3.5 transition-transform",
+                  showAdvanced ? "rotate-180" : ""
+                )}
+              />
+              {showAdvanced ? "詳細条件を閉じる" : "＋ さらに詳細な条件を指定する"}
+            </button>
+
+            {showAdvanced ? (
+              <div className="mt-3 grid grid-cols-2 gap-2.5 rounded-lg bg-slate-50 p-3">
+                {WIZARD_ADVANCED_FIELDS.map((field) => (
+                  <label key={field.id} className="flex flex-col gap-1 text-[11px] text-gray-500">
+                    {field.label}
+                    {field.type === "select" ? (
+                      <select
+                        value={advancedValues[field.id] ?? ""}
+                        onChange={(e) =>
+                          setAdvancedValues((prev) => ({ ...prev, [field.id]: e.target.value }))
+                        }
+                        className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
+                      >
+                        {field.options.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type={field.type}
+                        value={advancedValues[field.id] ?? ""}
+                        onChange={(e) =>
+                          setAdvancedValues((prev) => ({ ...prev, [field.id]: e.target.value }))
+                        }
+                        placeholder={"placeholder" in field ? field.placeholder : undefined}
+                        className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
+                      />
+                    )}
+                  </label>
+                ))}
+              </div>
+            ) : null}
+          </section>
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleRun}
+              disabled={!canRun}
+              className="inline-flex items-center gap-2 rounded-lg bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <Sparkles className="h-4 w-4" />
+              🚀 検索を実行する
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

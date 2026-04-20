@@ -32,3 +32,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local memos / handoff notes
+/おかげさ馬_分析スレッド_他AI展開用ハンドオフ.md
+/このPCでデモする.txt
