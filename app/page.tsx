@@ -267,6 +267,11 @@ export default function VocArtifactsSplitViewPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [isDataUnlocked, setIsDataUnlocked] = useState(false);
+  const [searchConfig, setSearchConfig] = useState({
+    period: "過去1ヶ月",
+    business: ["解約受付センター"],
+    skill: ["新人", "中堅"],
+  });
   const [showResult, setShowResult] = useState(false);
   const [artifactRows, setArtifactRows] = useState<ArtifactRow[] | null>(null);
   const [artifactTitle, setArtifactTitle] = useState("分析レポート結果（未実行）");
@@ -402,6 +407,55 @@ export default function VocArtifactsSplitViewPage() {
     }, 3000);
   };
 
+  const handleWelcomeCardClick = (title: string) => {
+    appendUserMessage(title);
+
+    const scenario = (() => {
+      if (title.includes("オペレータ品質")) {
+        return {
+          text: "オペレータの品質分析ですね。特にどの部分に焦点を当てますか？",
+          chips: [
+            "保留時間の長さと原因",
+            "NGワード・不適切発話の有無",
+            "顧客満足度との相関",
+          ],
+        };
+      }
+      if (title.includes("FAQ")) {
+        return {
+          text: "FAQの整備に向けて、どのようなデータを抽出しましょうか？",
+          chips: [
+            "よくある質問の自動集計",
+            "回答に窮したケースの特定",
+            "既存FAQとの乖離チェック",
+          ],
+        };
+      }
+      if (title.includes("成功・失敗")) {
+        return {
+          text: "傾向分析ですね。成功と失敗、どちらの要因を深掘りしますか？",
+          chips: [
+            "成約に至ったベストプラクティス抽出",
+            "失注・解約のボトルネック特定",
+            "両者のトーク比較",
+          ],
+        };
+      }
+      return {
+        text: "スクリプトの改善ですね。現状の課題はどのあたりにありますか？",
+        chips: [
+          "オープニングの離脱率改善",
+          "クロージングの決定率向上",
+          "反論時の切り返し強化",
+        ],
+      };
+    })();
+
+    window.setTimeout(() => {
+      appendAssistantMessage(scenario.text, { chips: scenario.chips });
+    }, 800);
+  };
+
   const handleWizardSubmit = (userText: string) => {
     appendUserMessage(userText);
     window.setTimeout(() => {
@@ -423,13 +477,10 @@ export default function VocArtifactsSplitViewPage() {
     appendUserMessage(text);
     setChatInput("");
     window.setTimeout(() => {
-      appendAssistantMessage("指示を受け付けました。分析を更新します。");
-      startAnalysis("table", {
-        onFinished: () => {
-          rightPanelRef.current?.resize("40%");
-        },
-      });
-    }, 700);
+      appendAssistantMessage(
+        "承知いたしました。分析を開始する前に、上部の「⚙️ 対象」バッジから、期間や対象業務の絞り込みに問題がないかご確認ください。"
+      );
+    }, 1000);
   };
 
   const handleCopyArtifact = async () => {
@@ -729,6 +780,7 @@ export default function VocArtifactsSplitViewPage() {
               <PanelLeft className="h-4 w-4" />
             </button>
 
+            <div className="flex flex-1 items-center justify-center gap-3">
             <div
               role="tablist"
               aria-label="中央ペイン表示切り替え"
@@ -768,6 +820,23 @@ export default function VocArtifactsSplitViewPage() {
                 <Table2 className="h-3.5 w-3.5" />
                 抽出データ（150件）
               </button>
+            </div>
+
+            <button
+              type="button"
+              title="※検索対象の変更は開発中です"
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-transparent bg-slate-100 px-3 py-1 text-xs text-slate-600 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700"
+            >
+              <span aria-hidden>⚙️</span>
+              <span>対象:</span>
+              <span className="font-medium text-slate-700 group-hover:text-teal-700">
+                {searchConfig.period}
+              </span>
+              <span className="text-slate-300">|</span>
+              <span>{searchConfig.business.length}業務</span>
+              <span className="text-slate-300">|</span>
+              <span>{searchConfig.skill.length}スキル</span>
+            </button>
             </div>
 
             <div className="relative">
@@ -851,7 +920,61 @@ export default function VocArtifactsSplitViewPage() {
               </div>
             </div>
           ) : messages.length === 0 ? (
-            <AnalysisWizard onSubmit={handleWizardSubmit} />
+            <div className="flex h-full flex-col items-center justify-center px-6">
+              <div className="w-full max-w-2xl">
+                <h2 className="text-center text-2xl font-semibold text-slate-800">
+                  何から始めますか？
+                </h2>
+                <p className="mt-2 text-center text-sm text-slate-500">
+                  目的に合ったカードを選ぶと、AIが必要な条件を対話で整えます。
+                </p>
+                <div className="mt-8 grid grid-cols-2 gap-4">
+                  {[
+                    {
+                      icon: "🎯",
+                      title: "オペレータ品質の分析",
+                      desc: "応対品質の傾向や改善ポイントを抽出",
+                    },
+                    {
+                      icon: "📚",
+                      title: "FAQ・QAの整備",
+                      desc: "よくある問い合わせと回答をナレッジ化",
+                    },
+                    {
+                      icon: "📈",
+                      title: "成功・失敗の傾向分析",
+                      desc: "契約・解約・保留などの勝ち筋を可視化",
+                    },
+                    {
+                      icon: "📝",
+                      title: "スクリプトの整備",
+                      desc: "現場で機能するトークスクリプトを設計",
+                    },
+                  ].map((card) => {
+                    const label = `${card.icon} ${card.title}`;
+                    return (
+                      <button
+                        key={card.title}
+                        type="button"
+                        onClick={() => handleWelcomeCardClick(label)}
+                        className="group flex flex-col items-center gap-2 rounded-xl border border-slate-200 bg-white p-6 text-center shadow-sm transition-all hover:-translate-y-0.5 hover:border-teal-500 hover:shadow-md"
+                      >
+                        <span className="text-3xl leading-none">{card.icon}</span>
+                        <span className="text-sm font-semibold text-slate-800 group-hover:text-teal-700">
+                          {card.title}
+                        </span>
+                        <span className="text-xs leading-5 text-slate-500">
+                          {card.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-6 text-center text-xs text-slate-400">
+                  または、下のチャット欄に直接ご要望をお書きいただけます。
+                </p>
+              </div>
+            </div>
           ) : (
           <div className="space-y-6 py-2">
             {messages.map((m) => (
