@@ -54,11 +54,6 @@ type ChatMessage = {
     focus: string[];
     usage: string;
   };
-  assistantList?: {
-    intro: string;
-    bullets: string[];
-    outro: string;
-  };
 };
 
 type ChatSession = {
@@ -77,36 +72,6 @@ type ArtifactRow = {
   status: "risk-high" | "risk-mid" | "positive";
   sample: string;
 };
-
-const SUGGEST_CARD_CONTENT: Record<
-  string,
-  { icon?: string; title: string; description: string }
-> = {
-  "1位の理由を通話ログで深掘り": {
-    title: "1位理由を深掘り",
-    description: "上位要因に紐づく具体的な通話例を抽出します。",
-  },
-  "年代別にクロス集計": {
-    title: "年代別クロス集計",
-    description: "年代セグメント別に解約理由を比較表示します。",
-  },
-};
-
-const WIZARD_PURPOSES = [
-  { id: "quality", emoji: "🎧", label: "オペレータ通話品質の分析" },
-  { id: "faq", emoji: "📚", label: "FAQ, QAの整備" },
-  { id: "trend", emoji: "📈", label: "成功・失敗の傾向分析" },
-  { id: "script", emoji: "📝", label: "スクリプトの整備" },
-  { id: "other", emoji: "✍️", label: "その他（自由記述）" },
-] as const;
-
-type WizardPurposeId = (typeof WIZARD_PURPOSES)[number]["id"];
-
-const WIZARD_DATE_PRESETS: { id: "today" | "week" | "lastMonth"; label: string }[] = [
-  { id: "today", label: "今日" },
-  { id: "week", label: "今週" },
-  { id: "lastMonth", label: "先月" },
-];
 
 const WIZARD_BUSINESS_OPTIONS = [
   "解約受付センター",
@@ -235,17 +200,6 @@ const QUALITY_FORM_QUESTIONS: {
       "教育研修案の策定",
     ],
   },
-];
-
-const WIZARD_ADVANCED_FIELDS = [
-  { id: "callStart", label: "通話開始日時", type: "datetime-local" as const },
-  { id: "callEnd", label: "終了日時", type: "datetime-local" as const },
-  { id: "phone", label: "顧客電話番号", type: "text" as const, placeholder: "例: 090-xxxx-xxxx" },
-  { id: "ngWord", label: "NGワード", type: "text" as const, placeholder: "例: 解約, 値上げ" },
-  { id: "callDuration", label: "通話時間", type: "text" as const, placeholder: "例: 5分以上" },
-  { id: "holdDuration", label: "保留時間", type: "text" as const, placeholder: "例: 30秒以上" },
-  { id: "direction", label: "通話方向", type: "select" as const, options: ["すべて", "インバウンド", "アウトバウンド"] },
-  { id: "group", label: "グループ", type: "select" as const, options: ["すべて", "Aチーム", "Bチーム", "新人"] },
 ];
 
 type CallRecord = {
@@ -394,7 +348,6 @@ export default function VocArtifactsSplitViewPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   // Left/Right を跨いで利用する分析状態（親レベル管理）
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [isDataUnlocked, setIsDataUnlocked] = useState(false);
   const [searchConfig, setSearchConfig] = useState<{
@@ -426,7 +379,7 @@ export default function VocArtifactsSplitViewPage() {
   );
   const [draftPrompt, setDraftPrompt] = useState<string | null>(null);
   const [analysisStep, setAnalysisStep] = useState<
-    "idle" | "prompting" | "result"
+    "idle" | "analyzing" | "result"
   >("idle");
   const [qualityFormAnswers, setQualityFormAnswers] = useState<{
     phase: string | null;
@@ -442,13 +395,11 @@ export default function VocArtifactsSplitViewPage() {
   const businessSearchRef = useRef<HTMLInputElement>(null);
   const skillSearchRef = useRef<HTMLInputElement>(null);
   const userSearchRef = useRef<HTMLInputElement>(null);
-  const [showResult, setShowResult] = useState(false);
   const [artifactRows, setArtifactRows] = useState<ArtifactRow[] | null>(null);
   const [artifactTitle, setArtifactTitle] = useState("分析レポート結果（未実行）");
   const [artifactSummary, setArtifactSummary] = useState("");
 
-  const analyzingTimeoutRef = useRef<number | null>(null);
-  const canSend = chatInput.trim().length > 0 && !isAnalyzing;
+  const canSend = chatInput.trim().length > 0 && analysisStep !== "analyzing";
 
   const filteredBusinessOptions = useMemo(() => {
     const q = popoverSearch.business.trim().toLowerCase();
@@ -592,7 +543,6 @@ export default function VocArtifactsSplitViewPage() {
     text: string,
     options?: {
       chips?: string[];
-      assistantList?: ChatMessage["assistantList"];
       showExecutionCard?: boolean;
       executionPrompt?: string;
     }
@@ -604,67 +554,10 @@ export default function VocArtifactsSplitViewPage() {
         role: "assistant",
         text,
         suggestChips: options?.chips,
-        assistantList: options?.assistantList,
         showExecutionCard: options?.showExecutionCard,
         executionPrompt: options?.executionPrompt,
       },
     ]);
-  };
-
-  const cancelAnalysis = () => {
-    if (analyzingTimeoutRef.current) {
-      window.clearTimeout(analyzingTimeoutRef.current);
-      analyzingTimeoutRef.current = null;
-    }
-    setIsAnalyzing(false);
-  };
-
-  const startAnalysis = (
-    format: OutputFormat,
-    options?: {
-      onFinished?: () => void;
-    }
-  ) => {
-    if (analyzingTimeoutRef.current) {
-      window.clearTimeout(analyzingTimeoutRef.current);
-      analyzingTimeoutRef.current = null;
-    }
-    setIsAnalyzing(true);
-    setShowResult(false);
-    setArtifactRows(null);
-    setArtifactSummary("");
-    setArtifactTitle(
-      `分析レポート結果（${format === "text" ? "テキスト" : format === "table" ? "表形式" : "Markdown"}）`
-    );
-    setHighlightedCallId(null);
-    rightPanelRef.current?.collapse();
-
-    analyzingTimeoutRef.current = window.setTimeout(() => {
-      setArtifactRows(ARTIFACT_ROWS);
-      setArtifactSummary(
-        "解約理由の上位は「初回未解決」「説明不足」「価格不満」で、応対品質と情報設計の改善余地が高いと判断されます。"
-      );
-      setIsAnalyzing(false);
-      setShowResult(true);
-      setAnalysisStep("result");
-      rightPanelRef.current?.resize("40%");
-      analyzingTimeoutRef.current = null;
-      options?.onFinished?.();
-    }, 3000);
-  };
-
-  const runAnalysis = (prompt: string, format: OutputFormat = "table") => {
-    if (!prompt.trim() || isAnalyzing) return;
-    appendUserMessage(prompt);
-    setChatInput("");
-    startAnalysis(format, {
-      onFinished: () => {
-        appendAssistantMessage(
-          "右側のパネルに分析結果を出力しました。この結果をさらに深掘りしますか？",
-          { chips: ["1位の理由を通話ログで深掘り", "年代別にクロス集計"] }
-        );
-      },
-    });
   };
 
   const isQualityFormComplete =
@@ -672,11 +565,7 @@ export default function VocArtifactsSplitViewPage() {
     qualityFormAnswers.focus.length > 0 &&
     qualityFormAnswers.usage !== null;
 
-  const toggleQualityAnswer = (
-    qId: QualityQuestionId,
-    option: string,
-    multi: boolean
-  ) => {
+  const toggleQualityAnswer = (qId: QualityQuestionId, option: string) => {
     setQualityFormAnswers((prev) => {
       if (qId === "focus") {
         const list = prev.focus;
@@ -746,16 +635,11 @@ export default function VocArtifactsSplitViewPage() {
       "Markdownの表形式（観点 / スコア(1-5) / 判定根拠 / 代表発話の引用）",
     ].join("\n");
 
-    if (analyzingTimeoutRef.current) {
-      window.clearTimeout(analyzingTimeoutRef.current);
-      analyzingTimeoutRef.current = null;
-    }
-    setIsAnalyzing(false);
-    setShowResult(false);
     setArtifactRows(null);
     setArtifactSummary("");
     setArtifactTitle("分析レポート結果（未実行）");
     setHighlightedCallId(null);
+    setAnalysisStep("idle");
     setIsDataUnlocked(true);
     setDraftPrompt(prompt);
 
@@ -818,6 +702,7 @@ export default function VocArtifactsSplitViewPage() {
   const handleExecuteAnalysis = () => {
     if (isExecuting) return;
     setIsExecuting(true);
+    setAnalysisStep("analyzing");
 
     window.setTimeout(() => {
       setArtifactRows(ARTIFACT_ROWS);
@@ -825,7 +710,6 @@ export default function VocArtifactsSplitViewPage() {
         "解約理由の上位は「初回未解決」「説明不足」「価格不満」で、応対品質と情報設計の改善余地が高いと判断されます。"
       );
       setArtifactTitle("分析レポート結果（表形式）");
-      setShowResult(true);
       setAnalysisStep("result");
       setIsExecuting(false);
       setIsDataUnlocked(true);
@@ -899,21 +783,6 @@ export default function VocArtifactsSplitViewPage() {
     }, 800);
   };
 
-  const handleWizardSubmit = (userText: string) => {
-    appendUserMessage(userText);
-    window.setTimeout(() => {
-      appendAssistantMessage(
-        "承知いたしました。対象業務とスキルの条件を確認しました。この条件でデータを抽出する前に、さらに解像度を上げるための質問です。今回の分析では、どのような『観点（例：解約の真因、NGワードの有無など）』をレポートにまとめたいですか？",
-        {
-          chips: [
-            "解約の真因をランキングで抽出",
-            "ポジティブ/ネガティブ要因の比較",
-          ],
-        }
-      );
-    }, 600);
-  };
-
   const handleBottomSend = () => {
     if (!canSend) return;
     const text = chatInput.trim();
@@ -977,11 +846,9 @@ export default function VocArtifactsSplitViewPage() {
   };
 
   const handleReset = () => {
-    cancelAnalysis();
     setArtifactRows(null);
     setArtifactSummary("");
     setArtifactTitle("分析レポート結果（未実行）");
-    setShowResult(false);
     setAnalysisStep("idle");
     rightPanelRef.current?.collapse();
   };
@@ -999,22 +866,14 @@ export default function VocArtifactsSplitViewPage() {
     () =>
       artifactRows
         ? artifactTitle
-        : isAnalyzing
+        : analysisStep === "analyzing"
           ? "分析レポート結果（生成中）"
           : "分析レポート結果（未実行）",
-    [artifactRows, artifactTitle, isAnalyzing]
+    [artifactRows, artifactTitle, analysisStep]
   );
 
   useEffect(() => {
     setIsClient(true);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (analyzingTimeoutRef.current) {
-        window.clearTimeout(analyzingTimeoutRef.current);
-      }
-    };
   }, []);
 
   return (
@@ -1982,17 +1841,6 @@ export default function VocArtifactsSplitViewPage() {
                     </div>
                     <div className="w-full max-w-[90%] text-[15px] leading-relaxed text-gray-800">
                       {m.text ? <p className="whitespace-pre-line">{m.text}</p> : null}
-                      {m.assistantList ? (
-                        <div className={cx("space-y-2", m.text ? "mt-3" : "")}>
-                          <p>{m.assistantList.intro}</p>
-                          <ul className="list-disc space-y-1 pl-5">
-                            {m.assistantList.bullets.map((item) => (
-                              <li key={item}>{item}</li>
-                            ))}
-                          </ul>
-                          <p>{m.assistantList.outro}</p>
-                        </div>
-                      ) : null}
                       {m.codeBlock ? (
                         <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 shadow-sm">
                           <div className="flex items-center justify-between border-b border-slate-700/60 bg-slate-800 px-3 py-1.5">
@@ -2054,9 +1902,7 @@ export default function VocArtifactsSplitViewPage() {
                                         key={opt}
                                         type="button"
                                         disabled={frozen}
-                                        onClick={() =>
-                                          toggleQualityAnswer(q.id, opt, q.multi)
-                                        }
+                                        onClick={() => toggleQualityAnswer(q.id, opt)}
                                         className={cx(
                                           "rounded-full border px-4 py-2 text-sm transition-all duration-200",
                                           isSelected
@@ -2180,7 +2026,7 @@ export default function VocArtifactsSplitViewPage() {
                 }}
                 placeholder="分析の指示や、さらに深掘りしたい質問を入力してください..."
                 className="max-h-28 min-h-[40px] flex-1 resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm text-gray-800 outline-none placeholder:text-gray-400"
-                disabled={isAnalyzing}
+                disabled={analysisStep === "analyzing"}
               />
               <button
                 type="button"
@@ -2271,14 +2117,14 @@ export default function VocArtifactsSplitViewPage() {
             isPromptSheetOpen ? "mr-[420px]" : "mr-0"
           )}
         >
-          {isAnalyzing && (
+          {analysisStep === "analyzing" && (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-teal-600" />
               <p className="mt-3 text-sm text-gray-600">分析を実行中... (処理中)</p>
             </div>
           )}
 
-          {!isAnalyzing && analysisStep === "idle" && (
+          {analysisStep === "idle" && (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="mb-3 rounded-full bg-slate-100 p-4">
                 <Folder className="h-6 w-6 text-slate-500" />
@@ -2289,7 +2135,7 @@ export default function VocArtifactsSplitViewPage() {
             </div>
           )}
 
-          {!isAnalyzing && analysisStep === "result" && artifactRows && (
+          {analysisStep === "result" && artifactRows && (
             <div className="space-y-6">
               <div>
                 <h3 className="text-lg font-semibold text-gray-800">解約理由分析（TOP3）</h3>
@@ -2585,343 +2431,6 @@ function Toggle({
         )}
       />
     </button>
-  );
-}
-
-function AnalysisWizard({
-  onSubmit,
-}: {
-  onSubmit: (userText: string) => void;
-}) {
-  const [purpose, setPurpose] = useState<WizardPurposeId | null>(null);
-  const [purposeOther, setPurposeOther] = useState("");
-  const [datePreset, setDatePreset] = useState<"today" | "week" | "lastMonth" | null>(null);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [business, setBusiness] = useState<string[]>([]);
-  const [skill, setSkill] = useState<string[]>([]);
-  const [userName, setUserName] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [advancedValues, setAdvancedValues] = useState<Record<string, string>>({});
-
-  const purposeLabel = useMemo(() => {
-    if (!purpose) return null;
-    const entry = WIZARD_PURPOSES.find((p) => p.id === purpose);
-    if (!entry) return null;
-    if (purpose === "other") {
-      return purposeOther.trim() ? `その他: ${purposeOther.trim()}` : null;
-    }
-    return entry.label;
-  }, [purpose, purposeOther]);
-
-  const dateRangeLabel = useMemo(() => {
-    if (datePreset === "today") return "今日";
-    if (datePreset === "week") return "今週";
-    if (datePreset === "lastMonth") return "先月";
-    if (dateFrom && dateTo) return `${dateFrom} 〜 ${dateTo}`;
-    if (dateFrom) return `${dateFrom} 〜`;
-    if (dateTo) return `〜 ${dateTo}`;
-    return null;
-  }, [datePreset, dateFrom, dateTo]);
-
-  const canRun = Boolean(purposeLabel);
-
-  const handleRun = () => {
-    if (!canRun) return;
-
-    const lines: string[] = [
-      "以下の条件で通話データの分析を行いたいです。要件のすり合わせをお願いします。",
-    ];
-    if (purposeLabel) lines.push(`【分析目的】${purposeLabel}`);
-    if (dateRangeLabel) lines.push(`【対象期間】${dateRangeLabel}`);
-    if (business.length) lines.push(`【対象業務】${business.join(", ")}`);
-    if (skill.length) lines.push(`【対象スキル】${skill.join(", ")}`);
-    if (userName.trim()) lines.push(`【対象オペレータ】${userName.trim()}`);
-
-    const advancedLines = WIZARD_ADVANCED_FIELDS.flatMap((field) => {
-      const v = advancedValues[field.id];
-      if (!v || (field.type === "select" && v === "すべて")) return [];
-      return [`【${field.label}】${v}`];
-    });
-    if (advancedLines.length) lines.push(...advancedLines);
-
-    onSubmit(lines.join("\n"));
-  };
-
-  return (
-    <div className="mx-auto w-full max-w-2xl py-4">
-      <div className="flex gap-4">
-        <div className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-          <Bot className="h-4 w-4" />
-        </div>
-        <div className="w-full space-y-6 text-sm leading-7 text-gray-800">
-          <p>
-            全データにアクセス可能です。どのような通話を分析しますか？
-            <br />
-            以下の問診票に答えていただくと、最適な条件で検索を実行します。
-          </p>
-
-          {/* Q1. 目的 */}
-          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center gap-2">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-semibold text-teal-700">
-                Q1
-              </span>
-              <p className="text-sm font-semibold text-gray-800">
-                分析の目的を教えてください
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              {WIZARD_PURPOSES.map((p, idx) => {
-                const selected = purpose === p.id;
-                const isLast = idx === WIZARD_PURPOSES.length - 1;
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setPurpose(p.id)}
-                    className={cx(
-                      "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-xs transition",
-                      isLast ? "col-span-2" : "",
-                      selected
-                        ? "border-teal-400 bg-teal-50 text-teal-800 shadow-sm"
-                        : "border-slate-200 bg-white text-gray-700 hover:border-teal-200 hover:bg-teal-50/40"
-                    )}
-                  >
-                    <span className="text-base leading-none">{p.emoji}</span>
-                    <span className="font-medium">{p.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-            {purpose === "other" ? (
-              <input
-                type="text"
-                value={purposeOther}
-                onChange={(e) => setPurposeOther(e.target.value)}
-                placeholder="分析したい目的を自由にご記入ください"
-                className="mt-3 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
-              />
-            ) : null}
-          </section>
-
-          {/* Q2. 期間 */}
-          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center gap-2">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-semibold text-teal-700">
-                Q2
-              </span>
-              <p className="text-sm font-semibold text-gray-800">対象期間を選んでください</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {WIZARD_DATE_PRESETS.map((preset) => {
-                const selected = datePreset === preset.id;
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => {
-                      setDatePreset(preset.id);
-                      setDateFrom("");
-                      setDateTo("");
-                    }}
-                    className={cx(
-                      "rounded-full border px-3 py-1 text-xs font-medium transition",
-                      selected
-                        ? "border-teal-400 bg-teal-50 text-teal-800"
-                        : "border-slate-200 bg-white text-gray-600 hover:border-teal-200 hover:bg-teal-50/40"
-                    )}
-                  >
-                    {preset.label}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-600">
-              <span className="text-gray-500">または範囲指定</span>
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => {
-                  setDateFrom(e.target.value);
-                  setDatePreset(null);
-                }}
-                className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
-              />
-              <span className="text-gray-400">〜</span>
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => {
-                  setDateTo(e.target.value);
-                  setDatePreset(null);
-                }}
-                className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
-              />
-            </div>
-          </section>
-
-          {/* Q3. 詳細条件 */}
-          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center gap-2">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-100 text-[11px] font-semibold text-teal-700">
-                Q3
-              </span>
-              <p className="text-sm font-semibold text-gray-800">詳細条件を指定します</p>
-            </div>
-            <div className="grid grid-cols-3 items-start gap-2.5">
-              <div className="flex flex-col gap-1 text-[11px] text-gray-500">
-                <div className="flex items-center justify-between">
-                  <span>業務名（複数選択可）</span>
-                  {business.length ? (
-                    <span className="rounded-full bg-teal-50 px-1.5 py-0.5 text-[10px] font-semibold text-teal-700">
-                      {business.length}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="flex h-28 flex-col gap-1 overflow-y-auto rounded-md border border-slate-200 bg-white p-2">
-                  {WIZARD_BUSINESS_OPTIONS.map((opt) => {
-                    const checked = business.includes(opt);
-                    return (
-                      <label
-                        key={opt}
-                        className={cx(
-                          "inline-flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs transition",
-                          checked ? "bg-teal-50 text-teal-800" : "text-gray-700 hover:bg-slate-50"
-                        )}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setBusiness((prev) => [...prev, opt]);
-                            } else {
-                              setBusiness((prev) => prev.filter((v) => v !== opt));
-                            }
-                          }}
-                          className="h-3.5 w-3.5 shrink-0 accent-teal-600"
-                        />
-                        <span className="truncate">{opt}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="flex flex-col gap-1 text-[11px] text-gray-500">
-                <div className="flex items-center justify-between">
-                  <span>スキル（複数選択可）</span>
-                  {skill.length ? (
-                    <span className="rounded-full bg-teal-50 px-1.5 py-0.5 text-[10px] font-semibold text-teal-700">
-                      {skill.length}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="flex h-28 flex-col gap-1 overflow-y-auto rounded-md border border-slate-200 bg-white p-2">
-                  {WIZARD_SKILL_OPTIONS.map((opt) => {
-                    const checked = skill.includes(opt);
-                    return (
-                      <label
-                        key={opt}
-                        className={cx(
-                          "inline-flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs transition",
-                          checked ? "bg-teal-50 text-teal-800" : "text-gray-700 hover:bg-slate-50"
-                        )}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSkill((prev) => [...prev, opt]);
-                            } else {
-                              setSkill((prev) => prev.filter((v) => v !== opt));
-                            }
-                          }}
-                          className="h-3.5 w-3.5 shrink-0 accent-teal-600"
-                        />
-                        <span className="truncate">{opt}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-              <label className="flex flex-col gap-1 text-[11px] text-gray-500">
-                ユーザー名
-                <input
-                  type="text"
-                  value={userName}
-                  onChange={(e) => setUserName(e.target.value)}
-                  placeholder="例: 山田 太郎"
-                  className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
-                />
-              </label>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowAdvanced((v) => !v)}
-              className="mt-4 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-teal-700 hover:bg-teal-50"
-            >
-              <ChevronDown
-                className={cx(
-                  "h-3.5 w-3.5 transition-transform",
-                  showAdvanced ? "rotate-180" : ""
-                )}
-              />
-              {showAdvanced ? "詳細条件を閉じる" : "＋ さらに詳細な条件を指定する"}
-            </button>
-
-            {showAdvanced ? (
-              <div className="mt-3 grid grid-cols-2 gap-2.5 rounded-lg bg-slate-50 p-3">
-                {WIZARD_ADVANCED_FIELDS.map((field) => (
-                  <label key={field.id} className="flex flex-col gap-1 text-[11px] text-gray-500">
-                    {field.label}
-                    {field.type === "select" ? (
-                      <select
-                        value={advancedValues[field.id] ?? ""}
-                        onChange={(e) =>
-                          setAdvancedValues((prev) => ({ ...prev, [field.id]: e.target.value }))
-                        }
-                        className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
-                      >
-                        {field.options.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type={field.type}
-                        value={advancedValues[field.id] ?? ""}
-                        onChange={(e) =>
-                          setAdvancedValues((prev) => ({ ...prev, [field.id]: e.target.value }))
-                        }
-                        placeholder={"placeholder" in field ? field.placeholder : undefined}
-                        className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-teal-400"
-                      />
-                    )}
-                  </label>
-                ))}
-              </div>
-            ) : null}
-          </section>
-
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleRun}
-              disabled={!canRun}
-              className="inline-flex items-center gap-2 rounded-lg bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              <MessageSquare className="h-4 w-4" />
-              💬 AIと分析要件をすり合わせる
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
   );
 }
 
