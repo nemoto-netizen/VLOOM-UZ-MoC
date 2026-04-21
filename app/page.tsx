@@ -126,12 +126,68 @@ const FILTER_USER_OPTIONS = [
 ];
 
 const FILTER_PERIOD_PRESETS = [
+  "今日",
+  "昨日",
   "過去1週間",
   "過去1ヶ月",
   "過去3ヶ月",
   "過去6ヶ月",
   "過去1年",
 ];
+
+const NG_WORD_OPTIONS = [
+  "申し訳ありません",
+  "絶対",
+  "そうですね",
+  "わかりません",
+  "できません",
+  "なるほどですね",
+];
+
+const CALL_DIRECTION_OPTIONS = ["発信", "着信", "内線"] as const;
+type CallDirection = "" | (typeof CALL_DIRECTION_OPTIONS)[number];
+
+type HmsRange = {
+  fromH: string;
+  fromM: string;
+  fromS: string;
+  toH: string;
+  toM: string;
+  toS: string;
+};
+
+const INITIAL_HMS_RANGE: HmsRange = {
+  fromH: "",
+  fromM: "",
+  fromS: "",
+  toH: "",
+  toM: "",
+  toS: "",
+};
+
+type AdvancedSearch = {
+  phoneNumber: string;
+  memo: string;
+  speechText: string;
+  ngWords: string[];
+  callDuration: HmsRange;
+  holdTime: HmsRange;
+  holdCountFrom: string;
+  holdCountTo: string;
+  callDirection: CallDirection;
+};
+
+const INITIAL_ADVANCED_SEARCH: AdvancedSearch = {
+  phoneNumber: "",
+  memo: "",
+  speechText: "",
+  ngWords: [],
+  callDuration: { ...INITIAL_HMS_RANGE },
+  holdTime: { ...INITIAL_HMS_RANGE },
+  holdCountFrom: "",
+  holdCountTo: "",
+  callDirection: "",
+};
 
 type QualityQuestionId = "phase" | "focus" | "usage";
 
@@ -361,6 +417,12 @@ export default function VocArtifactsSplitViewPage() {
     skill: string;
     user: string;
   }>({ business: "", skill: "", user: "" });
+  const [periodCustomFrom, setPeriodCustomFrom] = useState("");
+  const [periodCustomTo, setPeriodCustomTo] = useState("");
+  const [advancedSearch, setAdvancedSearch] = useState<AdvancedSearch>(
+    INITIAL_ADVANCED_SEARCH
+  );
+  const [draftPrompt, setDraftPrompt] = useState<string | null>(null);
   const [qualityFormAnswers, setQualityFormAnswers] = useState<{
     phase: string | null;
     focus: string[];
@@ -404,6 +466,54 @@ export default function VocArtifactsSplitViewPage() {
       : FILTER_USER_OPTIONS;
   }, [popoverSearch.user]);
 
+  const detailsCount = useMemo(() => {
+    let count = 0;
+    if (advancedSearch.phoneNumber.trim() !== "") count++;
+    if (advancedSearch.memo.trim() !== "") count++;
+    if (advancedSearch.speechText.trim() !== "") count++;
+    if (advancedSearch.ngWords.length > 0) count++;
+    if (Object.values(advancedSearch.callDuration).some((v) => v !== "")) count++;
+    if (Object.values(advancedSearch.holdTime).some((v) => v !== "")) count++;
+    if (
+      advancedSearch.holdCountFrom !== "" ||
+      advancedSearch.holdCountTo !== ""
+    ) {
+      count++;
+    }
+    if (advancedSearch.callDirection !== "") count++;
+    return count;
+  }, [advancedSearch]);
+
+  const toggleAdvancedNgWord = (word: string) => {
+    setAdvancedSearch((prev) => ({
+      ...prev,
+      ngWords: prev.ngWords.includes(word)
+        ? prev.ngWords.filter((w) => w !== word)
+        : [...prev.ngWords, word],
+    }));
+  };
+
+  const toggleAdvancedNgWordAll = () => {
+    setAdvancedSearch((prev) => ({
+      ...prev,
+      ngWords:
+        prev.ngWords.length === NG_WORD_OPTIONS.length
+          ? []
+          : [...NG_WORD_OPTIONS],
+    }));
+  };
+
+  const setHmsField = (
+    key: "callDuration" | "holdTime",
+    field: keyof HmsRange,
+    value: string
+  ) => {
+    setAdvancedSearch((prev) => ({
+      ...prev,
+      [key]: { ...prev[key], [field]: value },
+    }));
+  };
+
   useEffect(() => {
     if (openPopover === "business") {
       businessSearchRef.current?.focus();
@@ -429,15 +539,13 @@ export default function VocArtifactsSplitViewPage() {
 
   const businessBadgeLabel = (() => {
     const n = searchConfig.business.length;
-    if (n === 0) return "未選択";
-    if (n === WIZARD_BUSINESS_OPTIONS.length) return "全業務";
+    if (n === 0 || n === WIZARD_BUSINESS_OPTIONS.length) return "全業務";
     return `${n}業務`;
   })();
 
   const skillBadgeLabel = (() => {
     const n = searchConfig.skill.length;
-    if (n === 0) return "未選択";
-    if (n === WIZARD_SKILL_OPTIONS.length) return "全スキル";
+    if (n === 0 || n === WIZARD_SKILL_OPTIONS.length) return "全スキル";
     return `${n}スキル`;
   })();
 
@@ -455,16 +563,12 @@ export default function VocArtifactsSplitViewPage() {
   const executionContextLabel = (() => {
     const bn = searchConfig.business.length;
     const businessPart =
-      bn === 0
-        ? "未選択"
-        : bn === WIZARD_BUSINESS_OPTIONS.length
+      bn === 0 || bn === WIZARD_BUSINESS_OPTIONS.length
         ? "全業務"
         : `${bn}業務`;
     const sn = searchConfig.skill.length;
     const skillPart =
-      sn === 0
-        ? "未選択"
-        : sn === WIZARD_SKILL_OPTIONS.length
+      sn === 0 || sn === WIZARD_SKILL_OPTIONS.length
         ? "全スキル"
         : `${sn}スキル`;
     const un = searchConfig.user.length;
@@ -618,24 +722,39 @@ export default function VocArtifactsSplitViewPage() {
     appendUserMessage(userText);
 
     const prompt = [
-      "# 検索クエリ定義",
-      "- Target: 応対通話録音データ",
-      `- Focus Phase: ${phase}`,
+      "# Role",
+      "あなたはコンタクトセンターの応対品質分析を専門とするAIアナリストです。",
       "",
-      "# AI分析インストラクション",
-      `対象通話を「${phase}」のフェーズに絞り込み、以下の観点で応対品質を評価してください。`,
+      "# 対象",
+      "- ソース: 応対通話録音データ（VLOOM）",
+      `- 応対フェーズ: ${phase}`,
+      "",
+      "# 分析観点",
+      "以下の観点で応対品質を評価してください。",
       ...focus.map((f, i) => `${i + 1}. ${f}`),
       "",
       "# 活用目的",
       `本レポートは「${usage}」として使用します。この用途に最適化した表現・粒度で記述してください。`,
       "",
       "# 出力フォーマット",
-      "Markdownの表形式（観点, スコア, 根拠, 代表発話）",
+      "Markdownの表形式（観点 / スコア(1-5) / 判定根拠 / 代表発話の引用）",
     ].join("\n");
 
-    const greeting = `承知いたしました。ご指定いただいた『${phase}』フェーズを中心に、『${focus.join(
-      "、"
-    )}』の観点で分析条件を組み立てました。以下のプロンプトで問題なければ、結果を右ペインに抽出します。`;
+    if (analyzingTimeoutRef.current) {
+      window.clearTimeout(analyzingTimeoutRef.current);
+      analyzingTimeoutRef.current = null;
+    }
+    setIsAnalyzing(false);
+    setShowResult(false);
+    setArtifactRows(null);
+    setArtifactSummary("");
+    setArtifactTitle("分析レポート結果（未実行）");
+    setHighlightedCallId(null);
+    setIsDataUnlocked(true);
+    setDraftPrompt(prompt);
+    rightPanelRef.current?.resize("42%");
+
+    const greeting = `ご選択の構成に基づき、分析プロンプトの初稿を構築しました（右側に表示中）。より現場のニュアンスに合わせるため、例えば『「絶対」「できません」のような言い回しを特に厳しく見たい』といった具体的なイメージはありますか？\nあるいは『${phase}』のフェーズであれば、顧客感情の推移やNGワードの混入有無も加えると、より精緻な分析が可能ですが、いかがでしょうか？`;
 
     window.setTimeout(() => {
       setMessages((prev) => [
@@ -644,8 +763,12 @@ export default function VocArtifactsSplitViewPage() {
           id: createId(),
           role: "assistant",
           text: greeting,
-          showExecutionCard: true,
-          executionPrompt: prompt,
+          suggestChips: [
+            "言い回しを厳しく判定",
+            "教育的な視点を強めて",
+            "顧客感情の推移も追加",
+            "この内容で分析実行へ",
+          ],
         },
       ]);
     }, 800);
@@ -656,6 +779,13 @@ export default function VocArtifactsSplitViewPage() {
       ...prev,
       { id: createId(), role: "user", text: chip },
     ]);
+    const fallbackPrompt =
+      '# 検索クエリ定義\n- Target: 解約受付センター\n- VectorSearch: "解約の真因", "高い", "他社"\n\n# AI分析インストラクション\n抽出された通話録音データを解析し、以下の要件に従ってレポートを作成してください。\n1. 顧客が解約を決意した根本原因（真因）を特定し、出現頻度順にランキング化すること。\n2. 各要因に対して、実際の通話からの具体的な発話サンプルを引用すること。\n\n# 出力フォーマット\nMarkdownの表形式（順位, 解約理由, 件数, 比率, 具体例）';
+    const basePrompt = draftPrompt ?? fallbackPrompt;
+    const refinedPrompt = draftPrompt
+      ? `${basePrompt}\n\n# 追加指示（対話による調整）\n- ${chip}`
+      : basePrompt;
+
     window.setTimeout(() => {
       setMessages((prev) => [
         ...prev,
@@ -664,8 +794,7 @@ export default function VocArtifactsSplitViewPage() {
           role: "assistant",
           text: "承知いたしました。ご要望に合わせて、検索条件と分析指示を最適化した以下のプロンプトを作成しました。この内容で裏側でデータを抽出し、一気に分析を実行してよろしいでしょうか？",
           showExecutionCard: true,
-          executionPrompt:
-            '# 検索クエリ定義\n- Target: 解約受付センター\n- VectorSearch: "解約の真因", "高い", "他社"\n\n# AI分析インストラクション\n抽出された通話録音データを解析し、以下の要件に従ってレポートを作成してください。\n1. 顧客が解約を決意した根本原因（真因）を特定し、出現頻度順にランキング化すること。\n2. 各要因に対して、実際の通話からの具体的な発話サンプルを引用すること。\n\n# 出力フォーマット\nMarkdownの表形式（順位, 解約理由, 件数, 比率, 具体例）',
+          executionPrompt: refinedPrompt,
         },
       ]);
     }, 800);
@@ -690,7 +819,7 @@ export default function VocArtifactsSplitViewPage() {
         {
           id: createId(),
           role: "assistant",
-          text: "分析が完了しました。右パネルにレポートを出力しました。\n裏側で抽出された150件の対象データは、上部の「抽出データ」タブからご確認いただけます。",
+          text: "分析が完了しました。右パネルにレポートを出力しました。\n裏側で抽出された150件の対象データは、上部の「抽出対応履歴一覧」タブからご確認いただけます。",
         },
       ]);
     }, 3000);
@@ -804,9 +933,20 @@ export default function VocArtifactsSplitViewPage() {
     setHighlightedCallId(callId);
   };
 
+  const applyCustomPeriod = () => {
+    if (!periodCustomFrom || !periodCustomTo) return;
+    const label = `${periodCustomFrom.replace(/-/g, "/")} 〜 ${periodCustomTo.replace(
+      /-/g,
+      "/"
+    )}`;
+    setSearchConfig((prev) => ({ ...prev, period: label }));
+    setOpenPopover(null);
+  };
+
   const resetQualityState = () => {
     setQualityFormAnswers({ phase: null, focus: [], usage: null });
     setQualityExecutionContext(null);
+    setDraftPrompt(null);
     activeQualityFormIdRef.current = null;
   };
 
@@ -1132,7 +1272,9 @@ export default function VocArtifactsSplitViewPage() {
                 )}
               >
                 <Table2 className="h-3.5 w-3.5" />
-                抽出データ（150件）
+                {isDataUnlocked
+                  ? "抽出対応履歴一覧 (150件)"
+                  : "抽出対応履歴一覧"}
               </button>
             </div>
 
@@ -1201,9 +1343,7 @@ export default function VocArtifactsSplitViewPage() {
                 key: "details" as const,
                 icon: "➕",
                 label: "詳細条件",
-                value: searchConfig.details.length
-                  ? `${searchConfig.details.length}件`
-                  : "追加",
+                value: detailsCount > 0 ? `${detailsCount}項目` : "追加",
               },
             ] as const).map((badge) => {
               const isActive = openPopover === badge.key;
@@ -1238,7 +1378,7 @@ export default function VocArtifactsSplitViewPage() {
                     role="dialog"
                     aria-hidden={!isActive}
                     className={cx(
-                      "absolute left-0 top-full z-20 mt-2 w-64 origin-top rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg transition-all duration-150 ease-out",
+                      "absolute left-0 top-full z-20 mt-2 w-72 origin-top rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg transition-all duration-150 ease-out",
                       isActive
                         ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
                         : "pointer-events-none -translate-y-1 scale-95 opacity-0"
@@ -1259,7 +1399,15 @@ export default function VocArtifactsSplitViewPage() {
                             : filterKey === "skill"
                             ? filteredSkillOptions
                             : filteredUserOptions;
+                        const allOptions =
+                          filterKey === "business"
+                            ? WIZARD_BUSINESS_OPTIONS
+                            : filterKey === "skill"
+                            ? WIZARD_SKILL_OPTIONS
+                            : FILTER_USER_OPTIONS;
                         const selected = searchConfig[filterKey];
+                        const allSelected =
+                          selected.length === allOptions.length;
                         const inputRef =
                           filterKey === "business"
                             ? businessSearchRef
@@ -1283,7 +1431,25 @@ export default function VocArtifactsSplitViewPage() {
                                 className="w-full rounded-md border border-gray-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700 outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
                               />
                             </div>
-                            <div className="mt-2 max-h-48 overflow-y-auto">
+                            <label className="mt-2 flex cursor-pointer items-center gap-2 rounded-md border-b border-gray-100 px-2 py-1.5 hover:bg-slate-50">
+                              <input
+                                type="checkbox"
+                                checked={allSelected}
+                                onChange={() =>
+                                  setSearchConfig((prev) => ({
+                                    ...prev,
+                                    [filterKey]: allSelected
+                                      ? []
+                                      : [...allOptions],
+                                  }))
+                                }
+                                className="h-3.5 w-3.5 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                              />
+                              <span className="text-[11px] font-semibold text-slate-600">
+                                すべて選択
+                              </span>
+                            </label>
+                            <div className="mt-1 max-h-48 overflow-y-auto">
                               {options.length === 0 ? (
                                 <div className="px-1 py-2 text-slate-400">
                                   該当なし
@@ -1317,7 +1483,7 @@ export default function VocArtifactsSplitViewPage() {
                         );
                       })()
                     ) : badge.key === "period" ? (
-                      <div className="mt-2">
+                      <div className="mt-2 space-y-3">
                         <ul className="space-y-0.5">
                           {FILTER_PERIOD_PRESETS.map((preset) => {
                             const checked = searchConfig.period === preset;
@@ -1349,10 +1515,313 @@ export default function VocArtifactsSplitViewPage() {
                             );
                           })}
                         </ul>
+                        <div className="border-t border-gray-100 pt-3">
+                          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                            カスタム期間
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="date"
+                              value={periodCustomFrom}
+                              onChange={(e) =>
+                                setPeriodCustomFrom(e.target.value)
+                              }
+                              className="h-8 min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 text-[11px] text-slate-700 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                            />
+                            <span className="shrink-0 text-slate-400">〜</span>
+                            <input
+                              type="date"
+                              value={periodCustomTo}
+                              onChange={(e) =>
+                                setPeriodCustomTo(e.target.value)
+                              }
+                              className="h-8 min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 text-[11px] text-slate-700 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                            />
+                          </div>
+                          <div className="mt-2 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={applyCustomPeriod}
+                              disabled={
+                                !periodCustomFrom || !periodCustomTo
+                              }
+                              className="inline-flex h-7 items-center rounded-md bg-teal-600 px-3 text-[11px] font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-teal-300"
+                            >
+                              適用
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     ) : (
-                      <div className="mt-2 text-slate-500">
-                        詳細条件は今後のアップデートで順次対応予定です。
+                      <div className="mt-2 max-h-96 space-y-4 overflow-y-auto pr-0.5">
+                        <section>
+                          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                            テキスト検索
+                          </div>
+                          <div className="space-y-2">
+                            {(
+                              [
+                                {
+                                  key: "phoneNumber" as const,
+                                  label: "顧客電話番号",
+                                  placeholder: "例: 090-xxxx-xxxx",
+                                },
+                                {
+                                  key: "memo" as const,
+                                  label: "対応メモ",
+                                  placeholder: "キーワードを含む",
+                                },
+                                {
+                                  key: "speechText" as const,
+                                  label: "音声認識結果",
+                                  placeholder: "発話に含むキーワード",
+                                },
+                              ] as const
+                            ).map((field) => (
+                              <label key={field.key} className="block">
+                                <span className="mb-1 block text-[11px] text-slate-500">
+                                  {field.label}
+                                </span>
+                                <input
+                                  type="text"
+                                  value={advancedSearch[field.key]}
+                                  onChange={(e) =>
+                                    setAdvancedSearch((prev) => ({
+                                      ...prev,
+                                      [field.key]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder={field.placeholder}
+                                  className="h-8 w-full rounded-md border border-gray-200 bg-slate-50 px-2 text-[11px] text-slate-700 outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </section>
+
+                        <section className="border-t border-gray-100 pt-3">
+                          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                            パラメータ検索
+                          </div>
+                          <div className="space-y-3">
+                            <div>
+                              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500">
+                                <span>NGワード</span>
+                                <span className="text-[10px] text-slate-400">
+                                  {advancedSearch.ngWords.length}/
+                                  {NG_WORD_OPTIONS.length}
+                                </span>
+                              </div>
+                              <div className="max-h-32 overflow-y-auto rounded-md border border-gray-200 bg-white p-1.5">
+                                <label className="mb-1 flex cursor-pointer items-center gap-2 border-b border-gray-100 pb-1">
+                                  <input
+                                    type="checkbox"
+                                    checked={
+                                      advancedSearch.ngWords.length ===
+                                      NG_WORD_OPTIONS.length
+                                    }
+                                    onChange={toggleAdvancedNgWordAll}
+                                    className="h-3.5 w-3.5 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                                  />
+                                  <span className="text-[11px] font-semibold text-slate-600">
+                                    全選択
+                                  </span>
+                                </label>
+                                {NG_WORD_OPTIONS.map((word) => (
+                                  <label
+                                    key={word}
+                                    className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-slate-50"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={advancedSearch.ngWords.includes(
+                                        word
+                                      )}
+                                      onChange={() => toggleAdvancedNgWord(word)}
+                                      className="h-3.5 w-3.5 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                                    />
+                                    <span className="text-[11px] text-slate-700">
+                                      {word}
+                                    </span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+
+                            {(
+                              [
+                                { key: "callDuration" as const, label: "通話時間" },
+                                { key: "holdTime" as const, label: "保留時間" },
+                              ]
+                            ).map((row) => (
+                              <div key={row.key}>
+                                <div className="mb-1 text-[11px] text-slate-500">
+                                  {row.label}
+                                </div>
+                                <div className="space-y-1">
+                                  {(
+                                    [
+                                      {
+                                        prefix: "From",
+                                        h: "fromH" as const,
+                                        m: "fromM" as const,
+                                        s: "fromS" as const,
+                                      },
+                                      {
+                                        prefix: "To",
+                                        h: "toH" as const,
+                                        m: "toM" as const,
+                                        s: "toS" as const,
+                                      },
+                                    ] as const
+                                  ).map((side, idx) => (
+                                    <div
+                                      key={side.prefix}
+                                      className="flex items-center gap-1"
+                                    >
+                                      <span className="w-4 shrink-0 text-center text-[10px] text-slate-400">
+                                        {idx === 0 ? "" : "〜"}
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={99}
+                                        placeholder="0"
+                                        value={advancedSearch[row.key][side.h]}
+                                        onChange={(e) =>
+                                          setHmsField(
+                                            row.key,
+                                            side.h,
+                                            e.target.value
+                                          )
+                                        }
+                                        className="h-7 w-10 rounded-md border border-gray-200 bg-slate-50 px-1 text-center text-[11px] outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
+                                      />
+                                      <span className="text-[10px] text-slate-500">
+                                        時
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={59}
+                                        placeholder="0"
+                                        value={advancedSearch[row.key][side.m]}
+                                        onChange={(e) =>
+                                          setHmsField(
+                                            row.key,
+                                            side.m,
+                                            e.target.value
+                                          )
+                                        }
+                                        className="h-7 w-10 rounded-md border border-gray-200 bg-slate-50 px-1 text-center text-[11px] outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
+                                      />
+                                      <span className="text-[10px] text-slate-500">
+                                        分
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={59}
+                                        placeholder="0"
+                                        value={advancedSearch[row.key][side.s]}
+                                        onChange={(e) =>
+                                          setHmsField(
+                                            row.key,
+                                            side.s,
+                                            e.target.value
+                                          )
+                                        }
+                                        className="h-7 w-10 rounded-md border border-gray-200 bg-slate-50 px-1 text-center text-[11px] outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
+                                      />
+                                      <span className="text-[10px] text-slate-500">
+                                        秒
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+
+                            <div>
+                              <div className="mb-1 text-[11px] text-slate-500">
+                                保留回数
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  placeholder="0"
+                                  value={advancedSearch.holdCountFrom}
+                                  onChange={(e) =>
+                                    setAdvancedSearch((prev) => ({
+                                      ...prev,
+                                      holdCountFrom: e.target.value,
+                                    }))
+                                  }
+                                  className="h-7 w-14 rounded-md border border-gray-200 bg-slate-50 px-1.5 text-center text-[11px] outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
+                                />
+                                <span className="text-[10px] text-slate-500">
+                                  回
+                                </span>
+                                <span className="text-slate-400">〜</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  placeholder="0"
+                                  value={advancedSearch.holdCountTo}
+                                  onChange={(e) =>
+                                    setAdvancedSearch((prev) => ({
+                                      ...prev,
+                                      holdCountTo: e.target.value,
+                                    }))
+                                  }
+                                  className="h-7 w-14 rounded-md border border-gray-200 bg-slate-50 px-1.5 text-center text-[11px] outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
+                                />
+                                <span className="text-[10px] text-slate-500">
+                                  回
+                                </span>
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="mb-1 text-[11px] text-slate-500">
+                                通話方向
+                              </div>
+                              <select
+                                value={advancedSearch.callDirection}
+                                onChange={(e) =>
+                                  setAdvancedSearch((prev) => ({
+                                    ...prev,
+                                    callDirection: e.target
+                                      .value as CallDirection,
+                                  }))
+                                }
+                                className="h-8 w-full rounded-md border border-gray-200 bg-slate-50 px-2 text-[11px] text-slate-700 outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
+                              >
+                                <option value="">指定なし</option>
+                                {CALL_DIRECTION_OPTIONS.map((dir) => (
+                                  <option key={dir} value={dir}>
+                                    {dir}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {detailsCount > 0 && (
+                              <div className="flex justify-end border-t border-gray-100 pt-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setAdvancedSearch(INITIAL_ADVANCED_SEARCH)
+                                  }
+                                  className="text-[11px] text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
+                                >
+                                  条件をクリア
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </section>
                       </div>
                     )}
                   </div>
@@ -1366,10 +1835,7 @@ export default function VocArtifactsSplitViewPage() {
           {activeTab === "data" ? (
             <div className="rounded-lg border border-gray-200 bg-white">
               <div className="border-b border-gray-200 px-4 py-3">
-                <h3 className="text-sm font-semibold text-gray-800">VLOOM対応履歴一覧</h3>
-                <p className="mt-0.5 text-xs text-gray-500">
-                  抽出期間: 2026/01/01〜01/14 ／ 対象: 150件中 4件表示
-                </p>
+                <h3 className="text-sm font-semibold text-gray-800">対応履歴一覧</h3>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[640px] table-fixed text-xs">
@@ -1588,7 +2054,7 @@ export default function VocArtifactsSplitViewPage() {
                                 className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-teal-500 to-emerald-600 px-7 py-3 text-sm font-semibold text-white shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:from-teal-600 hover:to-emerald-700 hover:shadow-xl"
                               >
                                 <Sparkles className="h-4 w-4" />
-                                分析を開始する
+                                分析構成を確定し、プロンプトを構築する
                               </button>
                             </div>
                           ) : null}
@@ -1647,7 +2113,7 @@ export default function VocArtifactsSplitViewPage() {
         </div>
 
         <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3">
-          <div className="rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+          <div className="mx-auto max-w-3xl rounded-lg border border-gray-200 bg-gray-50 p-2.5">
             {hasAttachedFile ? (
               <div className="mb-2">
                 <button
@@ -1774,7 +2240,7 @@ export default function VocArtifactsSplitViewPage() {
             isPromptSheetOpen ? "mr-[420px]" : "mr-0"
           )}
         >
-          {!isAnalyzing && !showResult && (
+          {!isAnalyzing && !showResult && !draftPrompt && (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="mb-3 rounded-full bg-slate-100 p-4">
                 <Folder className="h-6 w-6 text-slate-500" />
@@ -1782,6 +2248,35 @@ export default function VocArtifactsSplitViewPage() {
               <p className="text-sm text-gray-500">
                 左側のチャットで分析を実行すると、ここに結果が表示されます。
               </p>
+            </div>
+          )}
+
+          {!isAnalyzing && !showResult && draftPrompt && (
+            <div className="space-y-4">
+              <div className="flex items-start gap-3 rounded-lg border border-teal-200 bg-teal-50/60 p-4">
+                <div className="mt-0.5 rounded-full bg-teal-100 p-2">
+                  <Sparkles className="h-4 w-4 text-teal-600" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-sm font-semibold text-teal-900">
+                    分析プロンプト（たたき台）
+                  </h3>
+                  <p className="mt-1 text-xs leading-relaxed text-teal-800/80">
+                    選択した分析構成から、AIが初稿を構築しました。左側のチャットで「言い回しを厳しく」「観点を追加」などと対話することで、このプロンプトが磨き上げられます。
+                  </p>
+                </div>
+              </div>
+              <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-900 shadow-sm">
+                <div className="flex items-center justify-between border-b border-slate-700/60 bg-slate-800 px-4 py-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+                    analysis_prompt.draft.md
+                  </span>
+                  <span className="text-[11px] text-slate-400">Ready</span>
+                </div>
+                <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-4 py-3 text-[12px] leading-relaxed text-slate-100">
+{draftPrompt}
+                </pre>
+              </div>
             </div>
           )}
 
