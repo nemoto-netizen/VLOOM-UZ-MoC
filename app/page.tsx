@@ -10,6 +10,7 @@ import {
   Copy,
   FileSpreadsheet,
   Folder,
+  Loader2,
   MessageSquare,
   MoreHorizontal,
   PanelLeft,
@@ -56,6 +57,7 @@ type ChatSession = {
   title: string;
   date: string;
   isPinned: boolean;
+  updatedAt?: number;
 };
 
 type ArtifactRow = {
@@ -167,6 +169,39 @@ const MOCK_SESSIONS: ChatSession[] = [
   { id: "4", title: "料金改定に関するVOCまとめ", date: "過去30日間", isPinned: false },
 ];
 
+type PromptTemplate = {
+  id: string;
+  title: string;
+  content: string;
+};
+
+const PROMPT_TEMPLATES: PromptTemplate[] = [
+  {
+    id: "t1",
+    title: "解約理由の真因特定",
+    content:
+      "# 前提条件\n- 対象: 直近30日間の解約申込通話\n- 除外: 一時的休止・試用期間満了\n\n# 指示\n1. 解約理由を上位3カテゴリに分類し、件数と構成比を提示せよ。\n2. 各カテゴリの代表的発言（サンプル）を3件ずつ抜粋せよ。\n3. 真因（表層ではなく根本原因）を仮説ベースで提示し、対応優先度を付けよ。",
+  },
+  {
+    id: "t2",
+    title: "新人オペレーター品質チェック",
+    content:
+      "# 前提条件\n- 対象: 入社6ヶ月以内のオペレーター\n- スキル区分: 新人\n\n# 指示\n1. 保留時間の中央値・最大値を算出し、平均値を上回る通話を抽出せよ。\n2. NGワード（『わかりません』『たぶん』『できません』）の出現回数をカウントせよ。\n3. 改善すべきスクリプト箇所を通話例と共に提示せよ。",
+  },
+  {
+    id: "t3",
+    title: "クレーム通話の感情分析",
+    content:
+      "# 前提条件\n- 対象: 感情スコアがネガティブ閾値を下回る通話\n- 期間: 過去14日\n\n# 指示\n1. クレーム種別（製品・対応・費用）ごとの感情強度ランキングを作成せよ。\n2. エスカレーション対応が適切だった通話と失敗した通話を対比せよ。\n3. 再発防止策を業務マニュアル改訂案として提案せよ。",
+  },
+  {
+    id: "t4",
+    title: "FAQ整備のための頻出質問抽出",
+    content:
+      "# 前提条件\n- 対象: インバウンド通話の冒頭2分\n\n# 指示\n1. 顧客が最初に発した質問をクラスタリングし、頻出上位20件を抽出せよ。\n2. 既存FAQで回答可能なもの／新規FAQとして追加すべきものに分類せよ。\n3. 新規FAQは想定質問文と推奨回答文のドラフトを生成せよ。",
+  },
+];
+
 const ARTIFACT_ROWS: ArtifactRow[] = [
   {
     rank: 1,
@@ -213,13 +248,16 @@ export default function VocArtifactsSplitViewPage() {
   const [executionOutputFormat, setExecutionOutputFormat] = useState<OutputFormat>("table");
   const [chatInput, setChatInput] = useState("");
   const [isPromptSheetOpen, setIsPromptSheetOpen] = useState(false);
-  const [promptDraftName, setPromptDraftName] = useState("解約分析_定型プロンプト");
-  const [promptDraftContent, setPromptDraftContent] = useState(
-    "以下の通話ログを対象に、解約理由を分類し、上位3カテゴリの傾向と具体例を抽出してください。\n加えて、改善アクションを優先度順で提案してください。"
-  );
+  const [promptSheetMode, setPromptSheetMode] = useState<"list" | "register">("list");
+  const [templateSearchQuery, setTemplateSearchQuery] = useState("");
+  const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null);
+  const [registerDraftName, setRegisterDraftName] = useState("");
+  const [registerDraftContent, setRegisterDraftContent] = useState("");
   const [isClient, setIsClient] = useState(false);
   const [hasAttachedFile, setHasAttachedFile] = useState(false);
   const [activeTab, setActiveTab] = useState<CentralTab>("chat");
+  const [sessions, setSessions] = useState<ChatSession[]>(MOCK_SESSIONS);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [openMenuSessionId, setOpenMenuSessionId] = useState<string | null>(null);
   const [highlightedCallId, setHighlightedCallId] = useState<string | null>(null);
 
@@ -227,6 +265,8 @@ export default function VocArtifactsSplitViewPage() {
 
   // Left/Right を跨いで利用する分析状態（親レベル管理）
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [isDataUnlocked, setIsDataUnlocked] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const [artifactRows, setArtifactRows] = useState<ArtifactRow[] | null>(null);
   const [artifactTitle, setArtifactTitle] = useState("分析レポート結果（未実行）");
@@ -318,18 +358,63 @@ export default function VocArtifactsSplitViewPage() {
   };
 
   const handleSuggestClick = (chip: string) => {
-    runAnalysis(chip);
+    setMessages((prev) => [
+      ...prev,
+      { id: createId(), role: "user", text: chip },
+    ]);
+    window.setTimeout(() => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          role: "assistant",
+          text: "承知いたしました。ご要望に合わせて、検索条件と分析指示を最適化した以下のプロンプトを作成しました。この内容で裏側でデータを抽出し、一気に分析を実行してよろしいでしょうか？",
+          showExecutionCard: true,
+          executionPrompt:
+            '# 検索クエリ定義\n- Target: 解約受付センター\n- VectorSearch: "解約の真因", "高い", "他社"\n\n# AI分析インストラクション\n抽出された通話録音データを解析し、以下の要件に従ってレポートを作成してください。\n1. 顧客が解約を決意した根本原因（真因）を特定し、出現頻度順にランキング化すること。\n2. 各要因に対して、実際の通話からの具体的な発話サンプルを引用すること。\n\n# 出力フォーマット\nMarkdownの表形式（順位, 解約理由, 件数, 比率, 具体例）',
+        },
+      ]);
+    }, 800);
   };
 
-  const handleWizardSubmit = () => {
-    if (isAnalyzing) return;
-    appendUserMessage("指定した条件で通話データを検索し、分析を実行してください。");
-    startAnalysis("table", {
-      onFinished: () => {
-        appendAssistantMessage("分析が完了しました。右ペインをご確認ください。");
-        rightPanelRef.current?.resize("40%");
-      },
-    });
+  const handleExecuteAnalysis = () => {
+    if (isExecuting) return;
+    setIsExecuting(true);
+
+    window.setTimeout(() => {
+      setArtifactRows(ARTIFACT_ROWS);
+      setArtifactSummary(
+        "解約理由の上位は「初回未解決」「説明不足」「価格不満」で、応対品質と情報設計の改善余地が高いと判断されます。"
+      );
+      setArtifactTitle("分析レポート結果（表形式）");
+      setShowResult(true);
+      setIsExecuting(false);
+      setIsDataUnlocked(true);
+      rightPanelRef.current?.resize("40%");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          role: "assistant",
+          text: "分析が完了しました。右パネルにレポートを出力しました。\n裏側で抽出された150件の対象データは、上部の「抽出データ」タブからご確認いただけます。",
+        },
+      ]);
+    }, 3000);
+  };
+
+  const handleWizardSubmit = (userText: string) => {
+    appendUserMessage(userText);
+    window.setTimeout(() => {
+      appendAssistantMessage(
+        "承知いたしました。対象業務とスキルの条件を確認しました。この条件でデータを抽出する前に、さらに解像度を上げるための質問です。今回の分析では、どのような『観点（例：解約の真因、NGワードの有無など）』をレポートにまとめたいですか？",
+        {
+          chips: [
+            "解約の真因をランキングで抽出",
+            "ポジティブ/ネガティブ要因の比較",
+          ],
+        }
+      );
+    }, 600);
   };
 
   const handleBottomSend = () => {
@@ -368,6 +453,14 @@ export default function VocArtifactsSplitViewPage() {
   const handleCitationClick = (callId: string) => {
     setActiveTab("data");
     setHighlightedCallId(callId);
+  };
+
+  const handleDeleteSession = (sessionId: string) => {
+    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    if (activeSessionId === sessionId) {
+      setActiveSessionId(null);
+      setMessages([]);
+    }
   };
 
   const handleReset = () => {
@@ -440,6 +533,14 @@ export default function VocArtifactsSplitViewPage() {
                   setMessages([]);
                   setActiveTab("chat");
                   rightPanelRef.current?.collapse();
+                  const newSession: ChatSession = {
+                    id: String(Date.now()),
+                    title: "名称未設定",
+                    date: "今日",
+                    isPinned: false,
+                  };
+                  setSessions((prev) => [newSession, ...prev]);
+                  setActiveSessionId(newSession.id);
                 }}
                 className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-gray-200 bg-white px-2 text-[11px] font-medium text-gray-700 hover:bg-slate-100"
                 title="新規セッション作成"
@@ -459,6 +560,10 @@ export default function VocArtifactsSplitViewPage() {
               </div>
               <button
                 type="button"
+                onClick={() => {
+                  setPromptSheetMode("list");
+                  setIsPromptSheetOpen(true);
+                }}
                 className="inline-flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-teal-700 transition hover:bg-teal-50"
               >
                 <Sparkles className="h-3.5 w-3.5" />
@@ -466,116 +571,145 @@ export default function VocArtifactsSplitViewPage() {
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-2">
-              <div className="space-y-1">
-                {MOCK_SESSIONS.map((session) => (
-                  <div
-                    key={session.id}
-                    className="group relative rounded-md border border-transparent transition hover:border-slate-200 hover:bg-slate-100"
-                  >
+              {(() => {
+                const groups: { label: string; items: ChatSession[] }[] = [
+                  { label: "📌 固定", items: sessions.filter((s) => s.isPinned) },
+                  { label: "今日", items: sessions.filter((s) => !s.isPinned && s.date === "今日") },
+                  { label: "昨日", items: sessions.filter((s) => !s.isPinned && s.date === "昨日") },
+                  { label: "過去7日間", items: sessions.filter((s) => !s.isPinned && s.date === "過去7日間") },
+                  { label: "過去30日間", items: sessions.filter((s) => !s.isPinned && s.date === "過去30日間") },
+                ];
+
+                const renderItem = (session: ChatSession) => {
+                  const isActive = session.id === activeSessionId;
+                  return (
                     <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => {
-                        setActiveTab("chat");
-                        setMessages([
-                          {
-                            id: "dummy1",
-                            role: "user",
-                            text: "過去の分析データを開きました。",
-                          },
-                          {
-                            id: "dummy2",
-                            role: "assistant",
-                            text: "分析結果は右ペインの通りです。",
-                          },
-                        ]);
-                        rightPanelRef.current?.resize("40%");
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                        }
-                      }}
-                      className="cursor-pointer px-3 py-2 text-left outline-none"
-                    >
-                      <div className="flex items-start justify-between gap-2 pr-6">
-                        <p className="text-sm text-gray-700">{session.title}</p>
-                        {session.isPinned ? (
-                          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                            固定
-                          </span>
-                        ) : null}
-                      </div>
-                      <p className="mt-1 text-[11px] text-gray-400">{session.date}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setOpenMenuSessionId((prev) =>
-                          prev === session.id ? null : session.id
-                        );
-                      }}
+                      key={session.id}
                       className={cx(
-                        "absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md text-gray-500 transition hover:bg-slate-200 hover:text-gray-700 focus:opacity-100 group-hover:opacity-100",
-                        openMenuSessionId === session.id ? "opacity-100" : "opacity-0"
+                        "group relative rounded-md border transition",
+                        isActive
+                          ? "border-teal-200 bg-teal-50"
+                          : "border-transparent hover:border-slate-200 hover:bg-slate-100"
                       )}
-                      title="操作メニュー"
                     >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </button>
-                    {openMenuSessionId === session.id ? (
-                      <>
-                        <div
-                          className="fixed inset-0 z-40"
-                          onClick={() => setOpenMenuSessionId(null)}
+                      {isActive ? (
+                        <span
+                          aria-hidden
+                          className="pointer-events-none absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-teal-500"
                         />
-                        <div
-                          role="menu"
-                          className="absolute right-1.5 top-8 z-50 w-44 overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg"
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
+                      ) : null}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          setActiveSessionId(session.id);
+                          setActiveTab("chat");
+                          setMessages([
+                            {
+                              id: createId(),
+                              role: "user",
+                              text: `${session.title}の内容を表示中...`,
+                            },
+                            {
+                              id: createId(),
+                              role: "assistant",
+                              text: "当時の分析結果を復元しました。",
+                            },
+                          ]);
+                          rightPanelRef.current?.resize("40%");
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                          }
+                        }}
+                        className="cursor-pointer px-3 py-2 text-left outline-none"
+                      >
+                        <p className="truncate pr-6 text-sm text-gray-700">{session.title}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenMenuSessionId((prev) =>
+                            prev === session.id ? null : session.id
+                          );
+                        }}
+                        className={cx(
+                          "absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md text-gray-500 transition hover:bg-slate-200 hover:text-gray-700 focus:opacity-100 group-hover:opacity-100",
+                          openMenuSessionId === session.id ? "opacity-100" : "opacity-0"
+                        )}
+                        title="操作メニュー"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </button>
+                      {openMenuSessionId === session.id ? (
+                        <>
+                          <div
+                            className="fixed inset-0 z-40"
                             onClick={() => setOpenMenuSessionId(null)}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-slate-50"
+                          />
+                          <div
+                            role="menu"
+                            className="absolute right-1.5 top-8 z-50 w-44 overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg"
                           >
-                            {session.isPinned ? (
-                              <>
-                                <PinOff className="h-3.5 w-3.5 text-gray-500" />
-                                固定解除
-                              </>
-                            ) : (
-                              <>
-                                <Pin className="h-3.5 w-3.5 text-gray-500" />
-                                固定
-                              </>
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => setOpenMenuSessionId(null)}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-slate-50"
-                          >
-                            <Pencil className="h-3.5 w-3.5 text-gray-500" />
-                            名称を変更
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => setOpenMenuSessionId(null)}
-                            className="flex w-full items-center gap-2 border-t border-gray-100 px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            削除
-                          </button>
-                        </div>
-                      </>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => setOpenMenuSessionId(null)}
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-slate-50"
+                            >
+                              {session.isPinned ? (
+                                <>
+                                  <PinOff className="h-3.5 w-3.5 text-gray-500" />
+                                  固定解除
+                                </>
+                              ) : (
+                                <>
+                                  <Pin className="h-3.5 w-3.5 text-gray-500" />
+                                  固定
+                                </>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => setOpenMenuSessionId(null)}
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-slate-50"
+                            >
+                              <Pencil className="h-3.5 w-3.5 text-gray-500" />
+                              名称を変更
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                handleDeleteSession(session.id);
+                                setOpenMenuSessionId(null);
+                              }}
+                              className="flex w-full items-center gap-2 border-t border-gray-100 px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              削除
+                            </button>
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                  );
+                };
+
+                return groups.map(({ label, items }) =>
+                  items.length === 0 ? null : (
+                    <section key={label}>
+                      <div className="px-3 pt-4 pb-1 text-xs font-semibold text-gray-500">
+                        {label}
+                      </div>
+                      <div className="space-y-1">{items.map(renderItem)}</div>
+                    </section>
+                  )
+                );
+              })()}
             </div>
           </div>
         </aside>
@@ -619,12 +753,16 @@ export default function VocArtifactsSplitViewPage() {
                 type="button"
                 role="tab"
                 aria-selected={activeTab === "data"}
+                disabled={!isDataUnlocked}
                 onClick={() => setActiveTab("data")}
+                title={isDataUnlocked ? undefined : "分析を実行するとロックが解除されます"}
                 className={cx(
                   "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition",
-                  activeTab === "data"
-                    ? "bg-white text-teal-700 shadow-sm"
-                    : "text-gray-600 hover:text-gray-800"
+                  !isDataUnlocked
+                    ? "cursor-not-allowed text-gray-400"
+                    : activeTab === "data"
+                      ? "bg-white text-teal-700 shadow-sm"
+                      : "text-gray-600 hover:text-gray-800"
                 )}
               >
                 <Table2 className="h-3.5 w-3.5" />
@@ -740,35 +878,17 @@ export default function VocArtifactsSplitViewPage() {
                         </div>
                       ) : null}
                       {m.suggestChips && (
-                        <div className="mt-3 grid grid-cols-2 gap-3">
-                          {m.suggestChips.map((chip) => {
-                            const card = SUGGEST_CARD_CONTENT[chip] ?? {
-                              title: chip,
-                              description: "この観点で分析を実行します。",
-                            };
-                            return (
-                              <button
-                                key={chip}
-                                type="button"
-                                onClick={() => handleSuggestClick(chip)}
-                                className="rounded-xl border border-teal-100 bg-teal-50/40 px-3 py-2.5 text-left transition hover:border-teal-300 hover:bg-teal-50"
-                              >
-                                <div className="flex items-start gap-2">
-                                  <span className="mt-0.5 text-base leading-none">
-                                    {card.icon ?? "•"}
-                                  </span>
-                                  <div>
-                                    <div className="text-sm font-semibold text-teal-800">
-                                      {card.title}
-                                    </div>
-                                    <div className="mt-1 text-xs leading-5 text-teal-700/80">
-                                      {card.description}
-                                    </div>
-                                  </div>
-                                </div>
-                              </button>
-                            );
-                          })}
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {m.suggestChips.map((chip) => (
+                            <button
+                              key={chip}
+                              type="button"
+                              onClick={() => handleSuggestClick(chip)}
+                              className="rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-sm text-teal-700 transition hover:bg-teal-100"
+                            >
+                              {chip}
+                            </button>
+                          ))}
                         </div>
                       )}
                       {m.showExecutionCard ? (
@@ -776,48 +896,37 @@ export default function VocArtifactsSplitViewPage() {
                           <p className="text-sm font-semibold text-gray-800">
                             🚀 以下の内容で分析を実行しますか？
                           </p>
-                          <div className="mt-3 whitespace-pre-line rounded-md bg-slate-50 p-3 text-xs leading-6 text-gray-700">
+                          <pre className="mt-3 overflow-x-auto whitespace-pre-wrap rounded-md bg-slate-900 p-4 font-mono text-xs leading-5 text-teal-400">
                             {m.executionPrompt ?? m.text}
-                          </div>
-                          <div className="mt-4 flex justify-end gap-2">
+                          </pre>
+                          <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
                             <select
                               value={executionOutputFormat}
                               onChange={(e) =>
                                 setExecutionOutputFormat(e.target.value as OutputFormat)
                               }
-                              disabled={isAnalyzing}
-                              className="h-9 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-700"
+                              disabled={isExecuting}
+                              className="h-9 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
                             >
                               <option value="text">📝 テキスト</option>
                               <option value="table">📊 表形式</option>
                               <option value="markdown">📄 Markdown</option>
                             </select>
-                            {isAnalyzing ? (
-                              <button
-                                type="button"
-                                onClick={cancelAnalysis}
-                                className="inline-flex h-9 items-center gap-1 rounded-md bg-red-600 px-3 text-xs font-semibold text-white hover:bg-red-700"
-                              >
-                                <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/60 border-t-white" />
-                                ⏹️ 生成をキャンセル
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  startAnalysis(executionOutputFormat, {
-                                    onFinished: () => {
-                                      appendAssistantMessage(
-                                        "分析が完了しました。右ペインで結果をご確認ください。"
-                                      );
-                                    },
-                                  })
-                                }
-                                className="inline-flex h-9 items-center rounded-md bg-teal-600 px-3 text-xs font-semibold text-white hover:bg-teal-700"
-                              >
-                                🚀 分析を実行
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={handleExecuteAnalysis}
+                              disabled={isExecuting}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-teal-600 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-teal-400"
+                            >
+                              {isExecuting ? (
+                                <>
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ⏳ 検索・分析を実行中...
+                                </>
+                              ) : (
+                                <>🚀 この内容で検索・分析を実行する</>
+                              )}
+                            </button>
                           </div>
                         </div>
                       ) : null}
@@ -910,7 +1019,10 @@ export default function VocArtifactsSplitViewPage() {
             <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
               <button
                 type="button"
-                onClick={() => setIsPromptSheetOpen(true)}
+                onClick={() => {
+                  setPromptSheetMode("register");
+                  setIsPromptSheetOpen(true);
+                }}
                 className="inline-flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-teal-200 bg-white px-3 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-50"
               >
                 <Star className="h-3.5 w-3.5" /> プロンプトを登録
@@ -1050,57 +1162,197 @@ export default function VocArtifactsSplitViewPage() {
             )}
           >
             <div className="flex h-full flex-col">
-              <div className="border-b border-gray-200 px-5 py-4">
-                <h3 className="text-sm font-semibold text-gray-800">プロンプト登録</h3>
-                <p className="mt-1 text-xs text-gray-500">
-                  現在の分析観点を再利用できるように保存します。
-                </p>
+              {promptSheetMode === "list" ? (
+                <>
+              <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800">
+                    ✨ プロンプトテンプレート管理
+                  </h3>
+                  <p className="mt-1 text-xs text-gray-500">
+                    検索して、過去の定型プロンプトをワンクリックで適用します。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsPromptSheetOpen(false)}
+                  className="rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                  aria-label="閉じる"
+                >
+                  ✕
+                </button>
               </div>
-              <div className="overflow-y-auto p-5">
-                <div className="flex flex-col gap-6">
+              <div className="shrink-0 border-b border-gray-200 px-5 py-3">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="text"
+                    value={templateSearchQuery}
+                    onChange={(e) => setTemplateSearchQuery(e.target.value)}
+                    placeholder="プロンプト名・内容で検索"
+                    className="h-9 w-full rounded-md border border-gray-200 bg-white pl-8 pr-2 text-sm text-gray-800 placeholder:text-gray-400 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                  />
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto px-3 py-3">
+                {(() => {
+                  const q = templateSearchQuery.trim().toLowerCase();
+                  const filtered = q
+                    ? PROMPT_TEMPLATES.filter(
+                        (t) =>
+                          t.title.toLowerCase().includes(q) ||
+                          t.content.toLowerCase().includes(q)
+                      )
+                    : PROMPT_TEMPLATES;
+                  if (filtered.length === 0) {
+                    return (
+                      <p className="px-3 py-6 text-center text-xs text-gray-400">
+                        該当するテンプレートが見つかりません。
+                      </p>
+                    );
+                  }
+                  return (
+                    <ul className="space-y-1.5">
+                      {filtered.map((t) => {
+                        const expanded = expandedTemplateId === t.id;
+                        return (
+                          <li
+                            key={t.id}
+                            className={cx(
+                              "overflow-hidden rounded-lg border transition",
+                              expanded
+                                ? "border-teal-300 bg-teal-50/40 shadow-sm"
+                                : "border-gray-200 bg-white hover:border-gray-300"
+                            )}
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedTemplateId(expanded ? null : t.id)
+                              }
+                              className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left"
+                            >
+                              <span className="truncate text-sm font-medium text-gray-800">
+                                {t.title}
+                              </span>
+                              <ChevronDown
+                                className={cx(
+                                  "h-4 w-4 shrink-0 text-gray-500 transition-transform",
+                                  expanded ? "rotate-180" : ""
+                                )}
+                              />
+                            </button>
+                            {expanded ? (
+                              <div className="border-t border-teal-100 bg-white px-3 py-3">
+                                <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-slate-50 px-3 py-2 text-[11px] leading-5 text-gray-700">
+                                  {t.content}
+                                </pre>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsPromptSheetOpen(false);
+                                    appendUserMessage(t.content);
+                                  }}
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-teal-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700"
+                                >
+                                  <Sparkles className="h-3.5 w-3.5" />
+                                  ✨ このプロンプトを適用
+                                </button>
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  );
+                })()}
+              </div>
+              <div className="shrink-0 border-t border-gray-200 px-5 py-3">
+                <button
+                  type="button"
+                  onClick={() => setPromptSheetMode("register")}
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-teal-300 bg-teal-50/40 px-3 py-2 text-xs font-semibold text-teal-700 transition hover:border-teal-400 hover:bg-teal-50"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  新しくプロンプトを登録する
+                </button>
+              </div>
+                </>
+              ) : (
+                <>
+              <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800">
+                    💾 プロンプトの新規登録
+                  </h3>
+                  <p className="mt-1 text-xs text-gray-500">
+                    よく使う観点を保存して、次回以降ワンクリックで呼び出せます。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsPromptSheetOpen(false)}
+                  className="rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                  aria-label="閉じる"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                <div className="flex flex-col gap-5">
                   <div>
                     <label className="mb-1 block text-xs font-medium text-gray-600">
-                      プロンプト名
+                      テンプレート名
                     </label>
                     <input
                       type="text"
-                      value={promptDraftName}
-                      onChange={(e) => setPromptDraftName(e.target.value)}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
+                      value={registerDraftName}
+                      onChange={(e) => setRegisterDraftName(e.target.value)}
+                      placeholder="例: 解約分析_定型プロンプト"
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:border-teal-400 focus:ring-teal-100"
                     />
                   </div>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-gray-600">
-                      内容
+                      プロンプト内容
                     </label>
                     <textarea
-                      rows={11}
-                      value={promptDraftContent}
-                      onChange={(e) => setPromptDraftContent(e.target.value)}
-                      className="w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none ring-2 ring-transparent focus:ring-teal-100"
+                      rows={12}
+                      value={registerDraftContent}
+                      onChange={(e) => setRegisterDraftContent(e.target.value)}
+                      placeholder="# 前提条件&#10;- 対象: ...&#10;&#10;# 指示&#10;1. ..."
+                      className="w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm leading-6 text-gray-800 outline-none ring-2 ring-transparent focus:border-teal-400 focus:ring-teal-100"
                     />
-                  </div>
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setIsPromptSheetOpen(false)}
-                      className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
-                    >
-                      キャンセル
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsPromptSheetOpen(false);
-                        alert("MoC: プロンプトを登録しました。");
-                      }}
-                      className="rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700"
-                    >
-                      登録
-                    </button>
                   </div>
                 </div>
               </div>
+              <div className="shrink-0 border-t border-gray-200 px-5 py-3">
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPromptSheetMode("list")}
+                    className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                  >
+                    キャンセル
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsPromptSheetOpen(false);
+                      setPromptSheetMode("list");
+                      setRegisterDraftName("");
+                      setRegisterDraftContent("");
+                      alert("保存しました");
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    💾 保存する
+                  </button>
+                </div>
+              </div>
+                </>
+              )}
             </div>
           </aside>,
           document.body
@@ -1139,7 +1391,7 @@ function Toggle({
 function AnalysisWizard({
   onSubmit,
 }: {
-  onSubmit: (summary: string, executionPrompt: string) => void;
+  onSubmit: (userText: string) => void;
 }) {
   const [purpose, setPurpose] = useState<WizardPurposeId | null>(null);
   const [purposeOther, setPurposeOther] = useState("");
@@ -1176,27 +1428,24 @@ function AnalysisWizard({
 
   const handleRun = () => {
     if (!canRun) return;
-    const base: string[] = [];
-    if (purposeLabel) base.push(`目的: ${purposeLabel}`);
-    if (dateRangeLabel) base.push(`期間: ${dateRangeLabel}`);
-    if (business.length) base.push(`業務名: ${business.join(", ")}`);
-    if (skill.length) base.push(`スキル: ${skill.join(", ")}`);
-    if (userName.trim()) base.push(`ユーザー名: ${userName.trim()}`);
+
+    const lines: string[] = [
+      "以下の条件で通話データの分析を行いたいです。要件のすり合わせをお願いします。",
+    ];
+    if (purposeLabel) lines.push(`【分析目的】${purposeLabel}`);
+    if (dateRangeLabel) lines.push(`【対象期間】${dateRangeLabel}`);
+    if (business.length) lines.push(`【対象業務】${business.join(", ")}`);
+    if (skill.length) lines.push(`【対象スキル】${skill.join(", ")}`);
+    if (userName.trim()) lines.push(`【対象オペレータ】${userName.trim()}`);
 
     const advancedLines = WIZARD_ADVANCED_FIELDS.flatMap((field) => {
       const v = advancedValues[field.id];
       if (!v || (field.type === "select" && v === "すべて")) return [];
-      return [`${field.label}: ${v}`];
+      return [`【${field.label}】${v}`];
     });
+    if (advancedLines.length) lines.push(...advancedLines);
 
-    const summary = base.join(" / ");
-    const executionPrompt = [
-      "【問診票による分析リクエスト】",
-      ...base,
-      ...(advancedLines.length ? ["", "■ 詳細条件", ...advancedLines] : []),
-    ].join("\n");
-
-    onSubmit(summary, executionPrompt);
+    onSubmit(lines.join("\n"));
   };
 
   return (
@@ -1466,8 +1715,8 @@ function AnalysisWizard({
               disabled={!canRun}
               className="inline-flex items-center gap-2 rounded-lg bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              <Sparkles className="h-4 w-4" />
-              🚀 検索を実行する
+              <MessageSquare className="h-4 w-4" />
+              💬 AIと分析要件をすり合わせる
             </button>
           </div>
         </div>
