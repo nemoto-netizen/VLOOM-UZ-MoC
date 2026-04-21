@@ -45,6 +45,13 @@ type ChatMessage = {
   suggestChips?: string[];
   showExecutionCard?: boolean;
   executionPrompt?: string;
+  qualityForm?: boolean;
+  qualityFormSubmitted?: boolean;
+  qualityFormSnapshot?: {
+    phase: string;
+    focus: string[];
+    usage: string;
+  };
   assistantList?: {
     intro: string;
     bullets: string[];
@@ -106,6 +113,71 @@ const WIZARD_BUSINESS_OPTIONS = [
 ];
 
 const WIZARD_SKILL_OPTIONS = ["新人", "中堅", "ベテラン"];
+
+const FILTER_USER_OPTIONS = [
+  "佐藤",
+  "鈴木",
+  "田中",
+  "山田",
+  "伊藤",
+  "渡辺",
+  "中村",
+  "小林",
+];
+
+const FILTER_PERIOD_PRESETS = [
+  "過去1週間",
+  "過去1ヶ月",
+  "過去3ヶ月",
+  "過去6ヶ月",
+  "過去1年",
+];
+
+type QualityQuestionId = "phase" | "focus" | "usage";
+
+const QUALITY_FORM_QUESTIONS: {
+  id: QualityQuestionId;
+  title: string;
+  multi: boolean;
+  options: string[];
+}[] = [
+  {
+    id: "phase",
+    title: "1. どのような応対フェーズに焦点を当てますか？",
+    multi: false,
+    options: [
+      "接客マナー・基本応対",
+      "ニーズ把握・ヒアリング",
+      "ソリューション提案",
+      "クロージング・手続き",
+      "反論・クレーム処理",
+    ],
+  },
+  {
+    id: "focus",
+    title: "2. 特に何を見極めたいですか？(複数選択可)",
+    multi: true,
+    options: [
+      "共感・情緒的つながり",
+      "正確な知識・マニュアル遵守",
+      "論理的な説明能力",
+      "誘導・成約力",
+      "無駄な対話の削減",
+      "コンプライアンス",
+    ],
+  },
+  {
+    id: "usage",
+    title: "3. 分析結果を何に使いますか？",
+    multi: false,
+    options: [
+      "本人へのフィードバック",
+      "管理者への報告書作成",
+      "ベストプラクティス抽出",
+      "教育研修案の策定",
+    ],
+  },
+];
 
 const WIZARD_ADVANCED_FIELDS = [
   { id: "callStart", label: "通話開始日時", type: "datetime-local" as const },
@@ -267,11 +339,42 @@ export default function VocArtifactsSplitViewPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [isDataUnlocked, setIsDataUnlocked] = useState(false);
-  const [searchConfig, setSearchConfig] = useState({
+  const [searchConfig, setSearchConfig] = useState<{
+    period: string;
+    business: string[];
+    skill: string[];
+    user: string[];
+    details: string[];
+  }>({
     period: "過去1ヶ月",
     business: ["解約受付センター"],
     skill: ["新人", "中堅"],
+    user: [],
+    details: [],
   });
+  const [sessionSearchQuery, setSessionSearchQuery] = useState("");
+  const [openPopover, setOpenPopover] = useState<
+    "period" | "business" | "skill" | "user" | "details" | null
+  >(null);
+  const [popoverSearch, setPopoverSearch] = useState<{
+    business: string;
+    skill: string;
+    user: string;
+  }>({ business: "", skill: "", user: "" });
+  const [qualityFormAnswers, setQualityFormAnswers] = useState<{
+    phase: string | null;
+    focus: string[];
+    usage: string | null;
+  }>({ phase: null, focus: [], usage: null });
+  const [qualityExecutionContext, setQualityExecutionContext] = useState<{
+    phase: string;
+    focus: string[];
+    usage: string;
+  } | null>(null);
+  const activeQualityFormIdRef = useRef<string | null>(null);
+  const businessSearchRef = useRef<HTMLInputElement>(null);
+  const skillSearchRef = useRef<HTMLInputElement>(null);
+  const userSearchRef = useRef<HTMLInputElement>(null);
   const [showResult, setShowResult] = useState(false);
   const [artifactRows, setArtifactRows] = useState<ArtifactRow[] | null>(null);
   const [artifactTitle, setArtifactTitle] = useState("分析レポート結果（未実行）");
@@ -279,6 +382,98 @@ export default function VocArtifactsSplitViewPage() {
 
   const analyzingTimeoutRef = useRef<number | null>(null);
   const canSend = chatInput.trim().length > 0 && !isAnalyzing;
+
+  const filteredBusinessOptions = useMemo(() => {
+    const q = popoverSearch.business.trim().toLowerCase();
+    return q
+      ? WIZARD_BUSINESS_OPTIONS.filter((o) => o.toLowerCase().includes(q))
+      : WIZARD_BUSINESS_OPTIONS;
+  }, [popoverSearch.business]);
+
+  const filteredSkillOptions = useMemo(() => {
+    const q = popoverSearch.skill.trim().toLowerCase();
+    return q
+      ? WIZARD_SKILL_OPTIONS.filter((o) => o.toLowerCase().includes(q))
+      : WIZARD_SKILL_OPTIONS;
+  }, [popoverSearch.skill]);
+
+  const filteredUserOptions = useMemo(() => {
+    const q = popoverSearch.user.trim().toLowerCase();
+    return q
+      ? FILTER_USER_OPTIONS.filter((o) => o.toLowerCase().includes(q))
+      : FILTER_USER_OPTIONS;
+  }, [popoverSearch.user]);
+
+  useEffect(() => {
+    if (openPopover === "business") {
+      businessSearchRef.current?.focus();
+    } else if (openPopover === "skill") {
+      skillSearchRef.current?.focus();
+    } else if (openPopover === "user") {
+      userSearchRef.current?.focus();
+    }
+  }, [openPopover]);
+
+  const toggleFilterOption = (
+    key: "business" | "skill" | "user",
+    option: string
+  ) => {
+    setSearchConfig((prev) => {
+      const list = prev[key];
+      const next = list.includes(option)
+        ? list.filter((x) => x !== option)
+        : [...list, option];
+      return { ...prev, [key]: next };
+    });
+  };
+
+  const businessBadgeLabel = (() => {
+    const n = searchConfig.business.length;
+    if (n === 0) return "未選択";
+    if (n === WIZARD_BUSINESS_OPTIONS.length) return "全業務";
+    return `${n}業務`;
+  })();
+
+  const skillBadgeLabel = (() => {
+    const n = searchConfig.skill.length;
+    if (n === 0) return "未選択";
+    if (n === WIZARD_SKILL_OPTIONS.length) return "全スキル";
+    return `${n}スキル`;
+  })();
+
+  const userBadgeLabel = (() => {
+    const n = searchConfig.user.length;
+    if (n === 0 || n === FILTER_USER_OPTIONS.length) return "全ユーザー";
+    return `${n}ユーザー`;
+  })();
+
+  const hasAssistantMessage = useMemo(
+    () => messages.some((m) => m.role === "assistant"),
+    [messages]
+  );
+
+  const executionContextLabel = (() => {
+    const bn = searchConfig.business.length;
+    const businessPart =
+      bn === 0
+        ? "未選択"
+        : bn === WIZARD_BUSINESS_OPTIONS.length
+        ? "全業務"
+        : `${bn}業務`;
+    const sn = searchConfig.skill.length;
+    const skillPart =
+      sn === 0
+        ? "未選択"
+        : sn === WIZARD_SKILL_OPTIONS.length
+        ? "全スキル"
+        : `${sn}スキル`;
+    const un = searchConfig.user.length;
+    const userPart =
+      un === 0 || un === FILTER_USER_OPTIONS.length
+        ? "全ユーザー"
+        : searchConfig.user.join("、");
+    return `🔍 実行条件：${searchConfig.period} / ${businessPart} / ${skillPart} / ユーザー: ${userPart}`;
+  })();
 
   const appendUserMessage = (text: string) => {
     setMessages((prev) => [...prev, { id: createId(), role: "user", text }]);
@@ -362,6 +557,100 @@ export default function VocArtifactsSplitViewPage() {
     });
   };
 
+  const isQualityFormComplete =
+    qualityFormAnswers.phase !== null &&
+    qualityFormAnswers.focus.length > 0 &&
+    qualityFormAnswers.usage !== null;
+
+  const toggleQualityAnswer = (
+    qId: QualityQuestionId,
+    option: string,
+    multi: boolean
+  ) => {
+    setQualityFormAnswers((prev) => {
+      if (qId === "focus") {
+        const list = prev.focus;
+        return {
+          ...prev,
+          focus: list.includes(option)
+            ? list.filter((x) => x !== option)
+            : [...list, option],
+        };
+      }
+      if (qId === "phase") {
+        return {
+          ...prev,
+          phase: prev.phase === option ? null : option,
+        };
+      }
+      return {
+        ...prev,
+        usage: prev.usage === option ? null : option,
+      };
+    });
+  };
+
+  const handleQualityFormSubmit = () => {
+    const { phase, focus, usage } = qualityFormAnswers;
+    if (!phase || focus.length === 0 || !usage) return;
+
+    const snapshot = { phase, focus: [...focus], usage };
+    setQualityExecutionContext(snapshot);
+
+    const formId = activeQualityFormIdRef.current;
+    if (formId) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === formId
+            ? { ...m, qualityFormSubmitted: true, qualityFormSnapshot: snapshot }
+            : m
+        )
+      );
+    }
+    activeQualityFormIdRef.current = null;
+
+    const userText = [
+      "【応対品質の分析要件】",
+      `・応対フェーズ: ${phase}`,
+      `・見極めたい観点: ${focus.join("、")}`,
+      `・分析結果の活用: ${usage}`,
+    ].join("\n");
+    appendUserMessage(userText);
+
+    const prompt = [
+      "# 検索クエリ定義",
+      "- Target: 応対通話録音データ",
+      `- Focus Phase: ${phase}`,
+      "",
+      "# AI分析インストラクション",
+      `対象通話を「${phase}」のフェーズに絞り込み、以下の観点で応対品質を評価してください。`,
+      ...focus.map((f, i) => `${i + 1}. ${f}`),
+      "",
+      "# 活用目的",
+      `本レポートは「${usage}」として使用します。この用途に最適化した表現・粒度で記述してください。`,
+      "",
+      "# 出力フォーマット",
+      "Markdownの表形式（観点, スコア, 根拠, 代表発話）",
+    ].join("\n");
+
+    const greeting = `承知いたしました。ご指定いただいた『${phase}』フェーズを中心に、『${focus.join(
+      "、"
+    )}』の観点で分析条件を組み立てました。以下のプロンプトで問題なければ、結果を右ペインに抽出します。`;
+
+    window.setTimeout(() => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          role: "assistant",
+          text: greeting,
+          showExecutionCard: true,
+          executionPrompt: prompt,
+        },
+      ]);
+    }, 800);
+  };
+
   const handleSuggestClick = (chip: string) => {
     setMessages((prev) => [
       ...prev,
@@ -410,17 +699,26 @@ export default function VocArtifactsSplitViewPage() {
   const handleWelcomeCardClick = (title: string) => {
     appendUserMessage(title);
 
+    if (title.includes("オペレータ品質")) {
+      setQualityFormAnswers({ phase: null, focus: [], usage: null });
+      setQualityExecutionContext(null);
+      const formId = createId();
+      activeQualityFormIdRef.current = formId;
+      window.setTimeout(() => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: formId,
+            role: "assistant",
+            text: "応対品質の分析ですね。的確な分析にするため、以下の3点を教えてください。",
+            qualityForm: true,
+          },
+        ]);
+      }, 800);
+      return;
+    }
+
     const scenario = (() => {
-      if (title.includes("オペレータ品質")) {
-        return {
-          text: "オペレータの品質分析ですね。特にどの部分に焦点を当てますか？",
-          chips: [
-            "保留時間の長さと原因",
-            "NGワード・不適切発話の有無",
-            "顧客満足度との相関",
-          ],
-        };
-      }
       if (title.includes("FAQ")) {
         return {
           text: "FAQの整備に向けて、どのようなデータを抽出しましょうか？",
@@ -506,11 +804,18 @@ export default function VocArtifactsSplitViewPage() {
     setHighlightedCallId(callId);
   };
 
+  const resetQualityState = () => {
+    setQualityFormAnswers({ phase: null, focus: [], usage: null });
+    setQualityExecutionContext(null);
+    activeQualityFormIdRef.current = null;
+  };
+
   const handleDeleteSession = (sessionId: string) => {
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
     if (activeSessionId === sessionId) {
       setActiveSessionId(null);
       setMessages([]);
+      resetQualityState();
     }
   };
 
@@ -582,6 +887,7 @@ export default function VocArtifactsSplitViewPage() {
                 type="button"
                 onClick={() => {
                   setMessages([]);
+                  resetQualityState();
                   setActiveTab("chat");
                   rightPanelRef.current?.collapse();
                   const newSession: ChatSession = {
@@ -602,11 +908,13 @@ export default function VocArtifactsSplitViewPage() {
             </div>
             <div className="shrink-0 space-y-2 border-b border-gray-200 px-3 py-2.5">
               <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="🔍 履歴検索"
-                  className="h-8 w-full rounded-md border border-gray-200 bg-white pl-8 pr-2 text-xs text-gray-700 placeholder:text-gray-400 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                  value={sessionSearchQuery}
+                  onChange={(e) => setSessionSearchQuery(e.target.value)}
+                  placeholder="セッションを検索"
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white pl-8 pr-2 text-xs text-slate-700 placeholder:text-slate-400 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                 />
               </div>
               <button
@@ -623,12 +931,18 @@ export default function VocArtifactsSplitViewPage() {
             </div>
             <div className="flex-1 overflow-y-auto p-2">
               {(() => {
+                const query = sessionSearchQuery.trim().toLowerCase();
+                const filtered = query
+                  ? sessions.filter((s) =>
+                      s.title.toLowerCase().includes(query)
+                    )
+                  : sessions;
                 const groups: { label: string; items: ChatSession[] }[] = [
-                  { label: "📌 固定", items: sessions.filter((s) => s.isPinned) },
-                  { label: "今日", items: sessions.filter((s) => !s.isPinned && s.date === "今日") },
-                  { label: "昨日", items: sessions.filter((s) => !s.isPinned && s.date === "昨日") },
-                  { label: "過去7日間", items: sessions.filter((s) => !s.isPinned && s.date === "過去7日間") },
-                  { label: "過去30日間", items: sessions.filter((s) => !s.isPinned && s.date === "過去30日間") },
+                  { label: "📌 固定", items: filtered.filter((s) => s.isPinned) },
+                  { label: "今日", items: filtered.filter((s) => !s.isPinned && s.date === "今日") },
+                  { label: "昨日", items: filtered.filter((s) => !s.isPinned && s.date === "昨日") },
+                  { label: "過去7日間", items: filtered.filter((s) => !s.isPinned && s.date === "過去7日間") },
+                  { label: "過去30日間", items: filtered.filter((s) => !s.isPinned && s.date === "過去30日間") },
                 ];
 
                 const renderItem = (session: ChatSession) => {
@@ -655,6 +969,7 @@ export default function VocArtifactsSplitViewPage() {
                         onClick={() => {
                           setActiveSessionId(session.id);
                           setActiveTab("chat");
+                          resetQualityState();
                           setMessages([
                             {
                               id: createId(),
@@ -780,7 +1095,6 @@ export default function VocArtifactsSplitViewPage() {
               <PanelLeft className="h-4 w-4" />
             </button>
 
-            <div className="flex flex-1 items-center justify-center gap-3">
             <div
               role="tablist"
               aria-label="中央ペイン表示切り替え"
@@ -822,23 +1136,6 @@ export default function VocArtifactsSplitViewPage() {
               </button>
             </div>
 
-            <button
-              type="button"
-              title="※検索対象の変更は開発中です"
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-transparent bg-slate-100 px-3 py-1 text-xs text-slate-600 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700"
-            >
-              <span aria-hidden>⚙️</span>
-              <span>対象:</span>
-              <span className="font-medium text-slate-700 group-hover:text-teal-700">
-                {searchConfig.period}
-              </span>
-              <span className="text-slate-300">|</span>
-              <span>{searchConfig.business.length}業務</span>
-              <span className="text-slate-300">|</span>
-              <span>{searchConfig.skill.length}スキル</span>
-            </button>
-            </div>
-
             <div className="relative">
               <button
                 type="button"
@@ -864,6 +1161,204 @@ export default function VocArtifactsSplitViewPage() {
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="relative mt-3 flex flex-wrap items-center gap-2">
+            {openPopover && (
+              <div
+                className="fixed inset-0 z-10"
+                onClick={() => setOpenPopover(null)}
+                aria-hidden
+              />
+            )}
+
+            {([
+              {
+                key: "period" as const,
+                icon: "📅",
+                label: "期間",
+                value: searchConfig.period,
+              },
+              {
+                key: "business" as const,
+                icon: "🏢",
+                label: "業務",
+                value: businessBadgeLabel,
+              },
+              {
+                key: "skill" as const,
+                icon: "🎓",
+                label: "スキル",
+                value: skillBadgeLabel,
+              },
+              {
+                key: "user" as const,
+                icon: "👤",
+                label: "ユーザー",
+                value: userBadgeLabel,
+              },
+              {
+                key: "details" as const,
+                icon: "➕",
+                label: "詳細条件",
+                value: searchConfig.details.length
+                  ? `${searchConfig.details.length}件`
+                  : "追加",
+              },
+            ] as const).map((badge) => {
+              const isActive = openPopover === badge.key;
+              return (
+                <div key={badge.key} className="relative z-20">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenPopover((prev) =>
+                        prev === badge.key ? null : badge.key
+                      )
+                    }
+                    className={cx(
+                      "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition",
+                      isActive
+                        ? "bg-teal-50 text-teal-700 ring-2 ring-teal-500/20"
+                        : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                    )}
+                  >
+                    <span aria-hidden>{badge.icon}</span>
+                    <span>{badge.label}</span>
+                    <span
+                      className={cx(
+                        "font-medium",
+                        isActive ? "text-teal-700" : "text-slate-600"
+                      )}
+                    >
+                      {badge.value}
+                    </span>
+                  </button>
+                  <div
+                    role="dialog"
+                    aria-hidden={!isActive}
+                    className={cx(
+                      "absolute left-0 top-full z-20 mt-2 w-64 origin-top rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg transition-all duration-150 ease-out",
+                      isActive
+                        ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
+                        : "pointer-events-none -translate-y-1 scale-95 opacity-0"
+                    )}
+                  >
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                      {badge.label}
+                    </div>
+
+                    {badge.key === "business" ||
+                    badge.key === "skill" ||
+                    badge.key === "user" ? (
+                      (() => {
+                        const filterKey = badge.key;
+                        const options =
+                          filterKey === "business"
+                            ? filteredBusinessOptions
+                            : filterKey === "skill"
+                            ? filteredSkillOptions
+                            : filteredUserOptions;
+                        const selected = searchConfig[filterKey];
+                        const inputRef =
+                          filterKey === "business"
+                            ? businessSearchRef
+                            : filterKey === "skill"
+                            ? skillSearchRef
+                            : userSearchRef;
+                        return (
+                          <>
+                            <div className="mt-2">
+                              <input
+                                ref={inputRef}
+                                type="text"
+                                value={popoverSearch[filterKey]}
+                                onChange={(e) =>
+                                  setPopoverSearch((prev) => ({
+                                    ...prev,
+                                    [filterKey]: e.target.value,
+                                  }))
+                                }
+                                placeholder="🔍 検索"
+                                className="w-full rounded-md border border-gray-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700 outline-none focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20"
+                              />
+                            </div>
+                            <div className="mt-2 max-h-48 overflow-y-auto">
+                              {options.length === 0 ? (
+                                <div className="px-1 py-2 text-slate-400">
+                                  該当なし
+                                </div>
+                              ) : (
+                                <ul className="space-y-0.5">
+                                  {options.map((opt) => {
+                                    const checked = selected.includes(opt);
+                                    return (
+                                      <li key={opt}>
+                                        <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-50">
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() =>
+                                              toggleFilterOption(filterKey, opt)
+                                            }
+                                            className="h-3.5 w-3.5 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                                          />
+                                          <span className="text-slate-700">
+                                            {opt}
+                                          </span>
+                                        </label>
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              )}
+                            </div>
+                          </>
+                        );
+                      })()
+                    ) : badge.key === "period" ? (
+                      <div className="mt-2">
+                        <ul className="space-y-0.5">
+                          {FILTER_PERIOD_PRESETS.map((preset) => {
+                            const checked = searchConfig.period === preset;
+                            return (
+                              <li key={preset}>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSearchConfig((prev) => ({
+                                      ...prev,
+                                      period: preset,
+                                    }))
+                                  }
+                                  className={cx(
+                                    "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left transition",
+                                    checked
+                                      ? "bg-teal-50 text-teal-700"
+                                      : "text-slate-700 hover:bg-slate-50"
+                                  )}
+                                >
+                                  <span>{preset}</span>
+                                  {checked ? (
+                                    <span aria-hidden className="text-teal-600">
+                                      ✓
+                                    </span>
+                                  ) : null}
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-slate-500">
+                        詳細条件は今後のアップデートで順次対応予定です。
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -920,15 +1415,17 @@ export default function VocArtifactsSplitViewPage() {
               </div>
             </div>
           ) : messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center px-6">
-              <div className="w-full max-w-2xl">
-                <h2 className="text-center text-2xl font-semibold text-slate-800">
+            <div className="flex h-full flex-col px-6 py-4">
+              <div className="flex-none text-center">
+                <h2 className="text-2xl font-semibold text-slate-800">
                   何から始めますか？
                 </h2>
-                <p className="mt-2 text-center text-sm text-slate-500">
+                <p className="mt-2 text-sm text-slate-500">
                   目的に合ったカードを選ぶと、AIが必要な条件を対話で整えます。
                 </p>
-                <div className="mt-8 grid grid-cols-2 gap-4">
+              </div>
+              <div className="flex-1 overflow-y-auto py-4">
+                <div className="mx-auto grid w-full max-w-2xl grid-cols-2 gap-4">
                   {[
                     {
                       icon: "🎯",
@@ -957,7 +1454,7 @@ export default function VocArtifactsSplitViewPage() {
                         key={card.title}
                         type="button"
                         onClick={() => handleWelcomeCardClick(label)}
-                        className="group flex flex-col items-center gap-2 rounded-xl border border-slate-200 bg-white p-6 text-center shadow-sm transition-all hover:-translate-y-0.5 hover:border-teal-500 hover:shadow-md"
+                        className="group flex flex-col items-center gap-2 rounded-xl border border-slate-200 bg-white p-5 text-center shadow-sm transition-all hover:-translate-y-0.5 hover:border-teal-500 hover:shadow-md"
                       >
                         <span className="text-3xl leading-none">{card.icon}</span>
                         <span className="text-sm font-semibold text-slate-800 group-hover:text-teal-700">
@@ -970,13 +1467,25 @@ export default function VocArtifactsSplitViewPage() {
                     );
                   })}
                 </div>
-                <p className="mt-6 text-center text-xs text-slate-400">
-                  または、下のチャット欄に直接ご要望をお書きいただけます。
-                </p>
               </div>
+              <p className="flex-none text-center text-xs text-slate-400">
+                または、下のチャット欄に直接ご要望をお書きいただけます。
+              </p>
             </div>
           ) : (
-          <div className="space-y-6 py-2">
+          <div className="mx-auto max-w-3xl space-y-6 py-2">
+            {hasAssistantMessage && (
+              <div className="mb-4 space-y-1.5 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                <div>{executionContextLabel}</div>
+                {qualityExecutionContext ? (
+                  <div className="border-t border-slate-200 pt-1.5">
+                    🎯 応対フェーズ：{qualityExecutionContext.phase} ／ 観点：
+                    {qualityExecutionContext.focus.join("、")} ／ 活用：
+                    {qualityExecutionContext.usage}
+                  </div>
+                ) : null}
+              </div>
+            )}
             {messages.map((m) => (
               <div
                 key={m.id}
@@ -987,7 +1496,7 @@ export default function VocArtifactsSplitViewPage() {
                     <div className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
                       <Bot className="h-4 w-4" />
                     </div>
-                    <div className="w-full max-w-[90%] text-sm leading-7 text-gray-800">
+                    <div className="w-full max-w-[90%] text-[15px] leading-relaxed text-gray-800">
                       {m.text ? <p className="whitespace-pre-line">{m.text}</p> : null}
                       {m.assistantList ? (
                         <div className={cx("space-y-2", m.text ? "mt-3" : "")}>
@@ -1014,6 +1523,77 @@ export default function VocArtifactsSplitViewPage() {
                           ))}
                         </div>
                       )}
+                      {m.qualityForm ? (
+                        <div className="mt-5 space-y-6">
+                          {QUALITY_FORM_QUESTIONS.map((q) => {
+                            const source =
+                              m.qualityFormSubmitted && m.qualityFormSnapshot
+                                ? {
+                                    phase: m.qualityFormSnapshot.phase,
+                                    focus: m.qualityFormSnapshot.focus,
+                                    usage: m.qualityFormSnapshot.usage,
+                                  }
+                                : {
+                                    phase: qualityFormAnswers.phase,
+                                    focus: qualityFormAnswers.focus,
+                                    usage: qualityFormAnswers.usage,
+                                  };
+                            return (
+                              <div key={q.id}>
+                                <p className="text-[15px] font-semibold text-slate-800">
+                                  {q.title}
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {q.options.map((opt) => {
+                                    const isSelected =
+                                      q.id === "focus"
+                                        ? source.focus.includes(opt)
+                                        : q.id === "phase"
+                                        ? source.phase === opt
+                                        : source.usage === opt;
+                                    const frozen = !!m.qualityFormSubmitted;
+                                    return (
+                                      <button
+                                        key={opt}
+                                        type="button"
+                                        disabled={frozen}
+                                        onClick={() =>
+                                          toggleQualityAnswer(q.id, opt, q.multi)
+                                        }
+                                        className={cx(
+                                          "rounded-full border px-4 py-2 text-sm transition-all duration-200",
+                                          isSelected
+                                            ? "border-teal-600 bg-teal-600 text-white shadow-sm"
+                                            : "border-gray-200 bg-white text-gray-700",
+                                          frozen
+                                            ? "cursor-not-allowed opacity-80"
+                                            : isSelected
+                                            ? ""
+                                            : "hover:border-teal-400 hover:text-teal-700"
+                                        )}
+                                      >
+                                        {opt}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {!m.qualityFormSubmitted && isQualityFormComplete ? (
+                            <div className="flex justify-center pt-2">
+                              <button
+                                type="button"
+                                onClick={handleQualityFormSubmit}
+                                className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-teal-500 to-emerald-600 px-7 py-3 text-sm font-semibold text-white shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:from-teal-600 hover:to-emerald-700 hover:shadow-xl"
+                              >
+                                <Sparkles className="h-4 w-4" />
+                                分析を開始する
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {m.showExecutionCard ? (
                         <div className="mt-3 w-full rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                           <p className="text-sm font-semibold text-gray-800">
@@ -1056,7 +1636,7 @@ export default function VocArtifactsSplitViewPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-slate-100 px-4 py-3 text-sm text-gray-800">
+                  <div className="max-w-[85%] whitespace-pre-line rounded-2xl rounded-br-sm bg-slate-100 px-4 py-3 text-[15px] leading-relaxed text-gray-800">
                     {m.text}
                   </div>
                 )}
