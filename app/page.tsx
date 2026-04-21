@@ -42,6 +42,8 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  codeBlock?: string;
+  codeBlockTitle?: string;
   suggestChips?: string[];
   showExecutionCard?: boolean;
   executionPrompt?: string;
@@ -423,6 +425,9 @@ export default function VocArtifactsSplitViewPage() {
     INITIAL_ADVANCED_SEARCH
   );
   const [draftPrompt, setDraftPrompt] = useState<string | null>(null);
+  const [analysisStep, setAnalysisStep] = useState<
+    "idle" | "prompting" | "result"
+  >("idle");
   const [qualityFormAnswers, setQualityFormAnswers] = useState<{
     phase: string | null;
     focus: string[];
@@ -641,6 +646,7 @@ export default function VocArtifactsSplitViewPage() {
       );
       setIsAnalyzing(false);
       setShowResult(true);
+      setAnalysisStep("result");
       rightPanelRef.current?.resize("40%");
       analyzingTimeoutRef.current = null;
       options?.onFinished?.();
@@ -752,9 +758,16 @@ export default function VocArtifactsSplitViewPage() {
     setHighlightedCallId(null);
     setIsDataUnlocked(true);
     setDraftPrompt(prompt);
-    rightPanelRef.current?.resize("42%");
 
-    const greeting = `ご選択の構成に基づき、分析プロンプトの初稿を構築しました（右側に表示中）。より現場のニュアンスに合わせるため、例えば『「絶対」「できません」のような言い回しを特に厳しく見たい』といった具体的なイメージはありますか？\nあるいは『${phase}』のフェーズであれば、顧客感情の推移やNGワードの混入有無も加えると、より精緻な分析が可能ですが、いかがでしょうか？`;
+    const greeting = [
+      "ご選択の構成で、分析プロンプトの初稿を作成しました。",
+      "",
+      `・応対フェーズ: ${phase}`,
+      `・評価軸: ${focus.join("、")}`,
+      `・活用先: ${usage}`,
+      "",
+      "下記の【分析プロンプトのたたき台】をご確認のうえ、現場のニュアンスに合わせるため、さらに『「絶対」「できません」などの言い回しを厳しく見たい』といった具体的なご要望はありますか？",
+    ].join("\n");
 
     window.setTimeout(() => {
       setMessages((prev) => [
@@ -763,10 +776,12 @@ export default function VocArtifactsSplitViewPage() {
           id: createId(),
           role: "assistant",
           text: greeting,
+          codeBlock: prompt,
+          codeBlockTitle: "分析プロンプトのたたき台",
           suggestChips: [
-            "言い回しを厳しく判定",
-            "教育的な視点を強めて",
-            "顧客感情の推移も追加",
+            "言い回しを厳しく",
+            "教育的視点を追加",
+            "顧客感情の推移を見たい",
             "この内容で分析実行へ",
           ],
         },
@@ -811,6 +826,7 @@ export default function VocArtifactsSplitViewPage() {
       );
       setArtifactTitle("分析レポート結果（表形式）");
       setShowResult(true);
+      setAnalysisStep("result");
       setIsExecuting(false);
       setIsDataUnlocked(true);
       rightPanelRef.current?.resize("40%");
@@ -947,6 +963,7 @@ export default function VocArtifactsSplitViewPage() {
     setQualityFormAnswers({ phase: null, focus: [], usage: null });
     setQualityExecutionContext(null);
     setDraftPrompt(null);
+    setAnalysisStep("idle");
     activeQualityFormIdRef.current = null;
   };
 
@@ -965,6 +982,7 @@ export default function VocArtifactsSplitViewPage() {
     setArtifactSummary("");
     setArtifactTitle("分析レポート結果（未実行）");
     setShowResult(false);
+    setAnalysisStep("idle");
     rightPanelRef.current?.collapse();
   };
 
@@ -1975,6 +1993,19 @@ export default function VocArtifactsSplitViewPage() {
                           <p>{m.assistantList.outro}</p>
                         </div>
                       ) : null}
+                      {m.codeBlock ? (
+                        <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 shadow-sm">
+                          <div className="flex items-center justify-between border-b border-slate-700/60 bg-slate-800 px-3 py-1.5">
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+                              {m.codeBlockTitle ?? "Prompt Draft"}
+                            </span>
+                            <span className="text-[10px] text-slate-400">Draft</span>
+                          </div>
+                          <pre className="max-h-80 overflow-auto whitespace-pre-wrap bg-slate-900 px-3 py-2.5 font-mono text-[12px] leading-5 text-teal-100">
+{m.codeBlock}
+                          </pre>
+                        </div>
+                      ) : null}
                       {m.suggestChips && (
                         <div className="mt-3 flex flex-wrap gap-2">
                           {m.suggestChips.map((chip) => (
@@ -2240,7 +2271,14 @@ export default function VocArtifactsSplitViewPage() {
             isPromptSheetOpen ? "mr-[420px]" : "mr-0"
           )}
         >
-          {!isAnalyzing && !showResult && !draftPrompt && (
+          {isAnalyzing && (
+            <div className="flex h-full flex-col items-center justify-center text-center">
+              <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-teal-600" />
+              <p className="mt-3 text-sm text-gray-600">分析を実行中... (処理中)</p>
+            </div>
+          )}
+
+          {!isAnalyzing && analysisStep === "idle" && (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="mb-3 rounded-full bg-slate-100 p-4">
                 <Folder className="h-6 w-6 text-slate-500" />
@@ -2251,43 +2289,7 @@ export default function VocArtifactsSplitViewPage() {
             </div>
           )}
 
-          {!isAnalyzing && !showResult && draftPrompt && (
-            <div className="space-y-4">
-              <div className="flex items-start gap-3 rounded-lg border border-teal-200 bg-teal-50/60 p-4">
-                <div className="mt-0.5 rounded-full bg-teal-100 p-2">
-                  <Sparkles className="h-4 w-4 text-teal-600" />
-                </div>
-                <div className="flex-1">
-                  <h3 className="text-sm font-semibold text-teal-900">
-                    分析プロンプト（たたき台）
-                  </h3>
-                  <p className="mt-1 text-xs leading-relaxed text-teal-800/80">
-                    選択した分析構成から、AIが初稿を構築しました。左側のチャットで「言い回しを厳しく」「観点を追加」などと対話することで、このプロンプトが磨き上げられます。
-                  </p>
-                </div>
-              </div>
-              <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-900 shadow-sm">
-                <div className="flex items-center justify-between border-b border-slate-700/60 bg-slate-800 px-4 py-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
-                    analysis_prompt.draft.md
-                  </span>
-                  <span className="text-[11px] text-slate-400">Ready</span>
-                </div>
-                <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-4 py-3 text-[12px] leading-relaxed text-slate-100">
-{draftPrompt}
-                </pre>
-              </div>
-            </div>
-          )}
-
-          {isAnalyzing && (
-            <div className="flex h-full flex-col items-center justify-center text-center">
-              <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-teal-600" />
-              <p className="mt-3 text-sm text-gray-600">分析を実行中... (処理中)</p>
-            </div>
-          )}
-
-          {!isAnalyzing && showResult && artifactRows && (
+          {!isAnalyzing && analysisStep === "result" && artifactRows && (
             <div className="space-y-6">
               <div>
                 <h3 className="text-lg font-semibold text-gray-800">解約理由分析（TOP3）</h3>
